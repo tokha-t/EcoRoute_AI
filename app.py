@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import joblib
 import pandas as pd
@@ -15,7 +16,17 @@ from src.data_generator import (
     WASTE_TYPES,
     ensure_data_exists,
 )
-from src.map_utils import create_route_map
+from src.map_utils import create_fleet_route_map, create_route_map
+from src.optimize.distances import apply_road_distances
+from src.optimize.solver import (
+    DEFAULT_TRUCK_CAPACITY_KG,
+    MAX_TRUCKS,
+    MIN_TRUCKS,
+    Plan,
+    SolverParams,
+    Truck,
+    plan_routes,
+)
 from src.predict import assign_priority, predict_fill_levels
 from src.routing import compare_routes
 from src.savings import calculate_savings
@@ -23,6 +34,12 @@ from src.train_model import METRICS_PATH, MODEL_PATH, train_and_save_model
 
 
 DEPOT = {"latitude": ASTANA_LATITUDE, "longitude": ASTANA_LONGITUDE}
+
+ENGINE_CVRP = "CVRP (OR-Tools)"
+ENGINE_CLASSIC = "Classic (2-opt)"
+DEFAULT_SHIFT_HOURS = 8
+
+STYLES_PATH = Path(__file__).parent / "assets" / "styles.css"
 
 PRIORITY_COLORS = {
     "Critical": "#dc2626",
@@ -59,487 +76,8 @@ st.set_page_config(
 
 
 def inject_styles() -> None:
-    st.markdown(
-        """
-        <style>
-        #MainMenu, .stDeployButton, [data-testid="stAppDeployButton"] {
-            display: none !important;
-        }
-
-        .stApp {
-            background:
-                radial-gradient(circle at 18% 0%, rgba(20, 184, 166, 0.18), transparent 32rem),
-                radial-gradient(circle at 88% 4%, rgba(14, 165, 233, 0.16), transparent 30rem),
-                linear-gradient(180deg, #f4fbf8 0%, #f7fafc 44%, #eef5f7 100%);
-            color: #0f172a;
-        }
-
-        [data-testid="stSidebar"] {
-            background:
-                linear-gradient(180deg, rgba(236, 253, 245, 0.98) 0%, rgba(240, 249, 255, 0.98) 56%, #ffffff 100%);
-            border-right: 1px solid rgba(148, 163, 184, 0.26);
-            box-shadow: 12px 0 36px rgba(15, 23, 42, 0.05);
-        }
-
-        [data-testid="stSidebar"] h2,
-        [data-testid="stSidebar"] h3 {
-            color: #0f3f3c;
-            letter-spacing: 0 !important;
-        }
-
-        [data-testid="stSidebar"] label,
-        [data-testid="stSidebar"] p {
-            color: #334155;
-        }
-
-        .sidebar-note {
-            margin-top: 1rem;
-            padding: 0.95rem;
-            border: 1px solid rgba(20, 184, 166, 0.24);
-            border-radius: 8px;
-            background: rgba(255, 255, 255, 0.78);
-            color: #475467;
-            font-size: 0.84rem;
-            line-height: 1.38;
-            box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
-        }
-
-        .sidebar-note strong {
-            display: block;
-            margin-bottom: 0.25rem;
-            color: #0f766e;
-            font-size: 0.9rem;
-        }
-
-        .block-container {
-            padding-top: 1.6rem;
-            padding-bottom: 3rem;
-            max-width: 1360px;
-        }
-
-        h1, h2, h3 {
-            color: #0f172a;
-        }
-
-        h1 {
-            font-size: 2.35rem !important;
-            line-height: 1.08 !important;
-            letter-spacing: 0 !important;
-            margin-bottom: 0.6rem !important;
-        }
-
-        h2 {
-            font-size: 1.6rem !important;
-            line-height: 1.18 !important;
-        }
-
-        h3 {
-            font-size: 1.34rem !important;
-            line-height: 1.22 !important;
-        }
-
-        .eco-hero {
-            position: relative;
-            overflow: hidden;
-            margin: 0.15rem 0 1rem 0;
-            padding: 1.5rem;
-            border: 1px solid rgba(255, 255, 255, 0.24);
-            border-radius: 12px;
-            background:
-                linear-gradient(135deg, rgba(6, 78, 59, 0.97) 0%, rgba(15, 118, 110, 0.96) 55%, rgba(14, 165, 233, 0.92) 100%);
-            color: #ffffff;
-            box-shadow: 0 22px 54px rgba(15, 76, 92, 0.22);
-        }
-
-        .eco-hero::before {
-            content: "";
-            position: absolute;
-            inset: -44% -10% auto auto;
-            width: 28rem;
-            height: 28rem;
-            border-radius: 999px;
-            background: rgba(255, 255, 255, 0.14);
-        }
-
-        .eco-hero::after {
-            content: "";
-            position: absolute;
-            right: 1.1rem;
-            bottom: -2.2rem;
-            width: 18rem;
-            height: 18rem;
-            border-radius: 999px;
-            border: 1px solid rgba(255, 255, 255, 0.18);
-            background:
-                radial-gradient(circle, rgba(255, 255, 255, 0.15) 0 2px, transparent 2px);
-            background-size: 18px 18px;
-            opacity: 0.55;
-        }
-
-        .eco-hero-content {
-            position: relative;
-            z-index: 1;
-            max-width: 980px;
-        }
-
-        .eco-eyebrow {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.45rem;
-            margin-bottom: 0.75rem;
-            padding: 0.34rem 0.66rem;
-            border: 1px solid rgba(255, 255, 255, 0.24);
-            border-radius: 999px;
-            background: rgba(255, 255, 255, 0.13);
-            color: #e0fbf5;
-            font-size: 0.78rem;
-            font-weight: 760;
-        }
-
-        .eco-hero h1 {
-            margin: 0 !important;
-            color: #ffffff !important;
-            font-size: 2.45rem !important;
-            line-height: 1.04 !important;
-            letter-spacing: 0 !important;
-        }
-
-        .eco-hero p {
-            max-width: 760px;
-            margin: 0.65rem 0 0 0;
-            color: rgba(240, 253, 250, 0.9);
-            font-size: 1.02rem;
-            line-height: 1.55;
-        }
-
-        .hero-stats {
-            position: relative;
-            z-index: 1;
-            display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 0.75rem;
-            max-width: 760px;
-            margin-top: 1.15rem;
-        }
-
-        .hero-stat {
-            padding: 0.78rem 0.86rem;
-            border: 1px solid rgba(255, 255, 255, 0.24);
-            border-radius: 8px;
-            background: rgba(255, 255, 255, 0.13);
-            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
-        }
-
-        .hero-stat-value {
-            color: #ffffff;
-            font-size: 1.18rem;
-            font-weight: 820;
-            line-height: 1.08;
-        }
-
-        .hero-stat-label {
-            margin-top: 0.24rem;
-            color: rgba(240, 253, 250, 0.78);
-            font-size: 0.76rem;
-            font-weight: 650;
-        }
-
-        [data-testid="stMetric"] {
-            padding: 0.92rem 1rem;
-            border: 1px solid rgba(148, 163, 184, 0.22);
-            border-top: 3px solid #14b8a6;
-            border-radius: 8px;
-            background: rgba(255, 255, 255, 0.92);
-            box-shadow: 0 14px 30px rgba(15, 23, 42, 0.06);
-        }
-
-        [data-testid="stMetricLabel"] p {
-            color: #64748b;
-            font-size: 0.72rem;
-            font-weight: 760;
-            letter-spacing: 0.03em;
-            text-transform: uppercase;
-        }
-
-        [data-testid="stMetricValue"] {
-            color: #0f172a;
-            font-weight: 820;
-        }
-
-        [data-testid="stMetricDelta"] p {
-            font-weight: 760;
-        }
-
-        .eco-track {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.45rem;
-            margin: 0.25rem 0 1rem 0;
-            padding: 0.42rem 0.7rem;
-            border-radius: 999px;
-            background: rgba(255, 255, 255, 0.84);
-            color: #0f766e;
-            border: 1px solid rgba(20, 184, 166, 0.24);
-            font-size: 0.86rem;
-            font-weight: 720;
-            box-shadow: 0 10px 26px rgba(15, 23, 42, 0.05);
-        }
-
-        .eco-pipeline {
-            display: grid;
-            grid-template-columns: repeat(4, minmax(0, 1fr));
-            gap: 0.8rem;
-            margin: 1rem 0 1.3rem 0;
-        }
-
-        .eco-step {
-            position: relative;
-            padding: 0.95rem 0.98rem;
-            border: 1px solid rgba(148, 163, 184, 0.24);
-            border-radius: 8px;
-            background: rgba(255, 255, 255, 0.88);
-            box-shadow: 0 14px 30px rgba(15, 23, 42, 0.05);
-        }
-
-        .eco-step::before {
-            content: "";
-            position: absolute;
-            top: 0;
-            left: 0.98rem;
-            right: 0.98rem;
-            height: 3px;
-            border-radius: 0 0 999px 999px;
-            background: linear-gradient(90deg, #14b8a6, #0ea5e9);
-        }
-
-        .eco-step strong {
-            display: block;
-            color: #0f172a;
-            font-size: 0.95rem;
-            margin-bottom: 0.2rem;
-        }
-
-        .eco-step span {
-            color: #64748b;
-            font-size: 0.82rem;
-        }
-
-        .scenario-card {
-            min-height: 168px;
-            padding: 1.02rem;
-            border-radius: 8px;
-            border: 1px solid rgba(148, 163, 184, 0.24);
-            background:
-                linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(248, 250, 252, 0.96) 100%);
-            box-shadow: 0 14px 30px rgba(15, 23, 42, 0.06);
-        }
-
-        .scenario-card h4 {
-            margin: 0 0 0.35rem 0;
-            color: #0f172a;
-        }
-
-        .scenario-card .scenario-meta {
-            color: #64748b;
-            font-size: 0.82rem;
-            margin-bottom: 0.85rem;
-        }
-
-        .scenario-grid {
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 0.45rem 0.75rem;
-        }
-
-        .scenario-value {
-            font-size: 1.25rem;
-            font-weight: 820;
-            color: #0f766e;
-        }
-
-        .scenario-label {
-            font-size: 0.75rem;
-            color: #64748b;
-        }
-
-        .map-panel {
-            padding: 1.05rem;
-            border: 1px solid rgba(148, 163, 184, 0.24);
-            border-radius: 8px;
-            background: linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(240, 253, 250, 0.78) 100%);
-            box-shadow: 0 14px 30px rgba(15, 23, 42, 0.06);
-            margin: 0.8rem 0 0.6rem 0;
-        }
-
-        .map-panel h3 {
-            margin: 0 0 0.25rem 0;
-            color: #0f172a;
-        }
-
-        .map-panel p {
-            margin: 0 0 0.8rem 0;
-            color: #64748b;
-        }
-
-        .map-legend {
-            display: flex;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 0.55rem 1rem;
-            margin: 0.4rem 0 0.95rem 0;
-            color: #475569;
-            font-size: 0.82rem;
-        }
-
-        .map-legend span {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.35rem;
-        }
-
-        .legend-dot {
-            width: 0.7rem;
-            height: 0.7rem;
-            border-radius: 999px;
-            display: inline-block;
-            border: 1px solid rgba(15, 23, 42, 0.12);
-        }
-
-        .legend-line {
-            width: 1.1rem;
-            height: 0.22rem;
-            border-radius: 999px;
-            display: inline-block;
-            background: #0f172a;
-        }
-
-        .legend-skip { background: #cbd5e1; }
-        .legend-medium { background: #eab308; }
-        .legend-high { background: #f97316; }
-        .legend-critical { background: #dc2626; }
-        .legend-depot { background: #2563eb; }
-
-        .map-stat-grid {
-            display: grid;
-            grid-template-columns: repeat(4, minmax(0, 1fr));
-            gap: 0.7rem;
-        }
-
-        .map-stat {
-            padding: 0.78rem 0.86rem;
-            border-radius: 8px;
-            background: rgba(255, 255, 255, 0.9);
-            border: 1px solid rgba(148, 163, 184, 0.18);
-        }
-
-        .map-stat-value {
-            font-size: 1.35rem;
-            line-height: 1.1;
-            font-weight: 820;
-            color: #0f172a;
-        }
-
-        .map-stat-label {
-            margin-top: 0.28rem;
-            font-size: 0.78rem;
-            color: #64748b;
-        }
-
-        [data-testid="stPlotlyChart"] {
-            padding: 0.5rem;
-            border: 1px solid rgba(148, 163, 184, 0.22);
-            border-radius: 8px;
-            background: rgba(255, 255, 255, 0.92);
-            box-shadow: 0 14px 30px rgba(15, 23, 42, 0.06);
-        }
-
-        [data-testid="stDataFrame"] {
-            border: 1px solid rgba(148, 163, 184, 0.22);
-            border-radius: 8px;
-            overflow: hidden;
-            box-shadow: 0 14px 30px rgba(15, 23, 42, 0.05);
-        }
-
-        [data-testid="stExpander"] {
-            border: 1px solid rgba(148, 163, 184, 0.22);
-            border-radius: 8px;
-            background: rgba(255, 255, 255, 0.82);
-            box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
-        }
-
-        [data-testid="stAlert"] {
-            border-radius: 8px;
-            border: 1px solid rgba(148, 163, 184, 0.2);
-            box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
-        }
-
-        [data-testid="stAlert"],
-        [data-testid="stAlert"] p,
-        [data-testid="stAlert"] div {
-            color: #0f172a !important;
-        }
-
-        .stDownloadButton > button {
-            border: 0;
-            border-radius: 8px;
-            background: linear-gradient(135deg, #0f766e, #0ea5e9);
-            color: #ffffff;
-            font-weight: 760;
-            box-shadow: 0 12px 28px rgba(14, 165, 233, 0.18);
-        }
-
-        .stDownloadButton > button:hover {
-            color: #ffffff;
-            border: 0;
-            filter: brightness(1.03);
-        }
-
-        div[data-baseweb="select"] > div,
-        [data-testid="stSlider"] {
-            border-radius: 8px;
-        }
-
-        @media (max-width: 900px) {
-            .block-container {
-                padding-top: 1.25rem;
-            }
-
-            h1 {
-                font-size: 2.15rem !important;
-            }
-
-            h2 {
-                font-size: 1.38rem !important;
-            }
-
-            h3 {
-                font-size: 1.16rem !important;
-            }
-
-            .eco-hero {
-                padding: 1.1rem;
-            }
-
-            .eco-hero h1 {
-                font-size: 2rem !important;
-            }
-
-            .hero-stats {
-                grid-template-columns: 1fr;
-            }
-
-            .eco-pipeline {
-                grid-template-columns: 1fr;
-            }
-
-            .map-stat-grid {
-                grid-template-columns: repeat(2, minmax(0, 1fr));
-            }
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    css = STYLES_PATH.read_text(encoding="utf-8")
+    st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
 
 
 def apply_chart_theme(fig, height: int = 360):
@@ -757,7 +295,11 @@ def render_hero(threshold: int | float, district_filter: str, waste_type_filter:
     )
 
 
-def render_pipeline(threshold: int | float) -> None:
+def render_pipeline(threshold: int | float, engine: str) -> None:
+    if engine == ENGINE_CVRP:
+        optimize_text = "OR-Tools CVRP splits stops across trucks within capacity and shift limits."
+    else:
+        optimize_text = "Nearest-neighbor route is improved with 2-opt."
     st.markdown(
         f"""
         <div class="eco-track">Live operations pipeline · Astana demo</div>
@@ -772,7 +314,7 @@ def render_pipeline(threshold: int | float) -> None:
             </div>
             <div class="eco-step">
                 <strong>3. Optimize</strong>
-                <span>Nearest-neighbor route is improved with 2-opt.</span>
+                <span>{optimize_text}</span>
             </div>
             <div class="eco-step">
                 <strong>4. Quantify</strong>
@@ -786,13 +328,127 @@ def render_pipeline(threshold: int | float) -> None:
 
 def scenario_metrics(predicted_df: pd.DataFrame, scenario_threshold: int) -> dict:
     scenario_df = assign_priority(predicted_df, threshold=scenario_threshold)
-    scenario_selected_df = scenario_df[scenario_df["predicted_fill_pct"] >= scenario_threshold].copy()
-    scenario_routes = compare_routes(scenario_df, scenario_selected_df, DEPOT)
+    scenario_selected_df = scenario_df[scenario_df["must_serve"]].copy()
+    scenario_routes = apply_road_distances(compare_routes(scenario_df, scenario_selected_df, DEPOT))
     return calculate_savings(scenario_df, scenario_selected_df, scenario_routes)
+
+
+@st.cache_data(show_spinner=False)
+def solve_cvrp(selected_bins_df: pd.DataFrame, n_trucks: int, capacity_kg: float, shift_hours: float) -> Plan:
+    trucks = [Truck(truck_id=f"Truck {i}", capacity_kg=capacity_kg) for i in range(1, n_trucks + 1)]
+    params = SolverParams(
+        depot=(DEPOT["latitude"], DEPOT["longitude"]),
+        shift_duration_s=shift_hours * 3600.0,
+    )
+    return plan_routes(selected_bins_df, trucks, params)
+
+
+def depot_route_point() -> dict:
+    return {
+        "bin_id": "Depot",
+        "latitude": DEPOT["latitude"],
+        "longitude": DEPOT["longitude"],
+        "district": "Depot",
+        "priority": "Depot",
+    }
+
+
+def plan_truck_route_points(plan: Plan, sites_df: pd.DataFrame) -> list[list[dict]]:
+    lookup = sites_df.set_index("bin_id")
+    truck_routes = []
+    for route in plan.routes:
+        points = [depot_route_point()]
+        for site_id in route.site_ids:
+            row = lookup.loc[site_id]
+            points.append(
+                {
+                    "bin_id": site_id,
+                    "latitude": float(row["latitude"]),
+                    "longitude": float(row["longitude"]),
+                    "district": row.get("district", ""),
+                    "priority": row.get("priority", ""),
+                }
+            )
+        points.append(depot_route_point())
+        truck_routes.append(points)
+    return truck_routes
+
+
+def cvrp_route_order_df(plan: Plan, sites_df: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for route, points in zip(plan.routes, plan_truck_route_points(plan, sites_df)):
+        for order, point in enumerate(points, start=1):
+            rows.append(
+                {
+                    "truck": route.truck_id,
+                    "stop_order": order,
+                    "bin_id": point["bin_id"],
+                    "district": point["district"],
+                    "priority": point["priority"],
+                    "latitude": point["latitude"],
+                    "longitude": point["longitude"],
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def render_cvrp_violations(plan: Plan) -> None:
+    bullets = "\n".join(f"- {violation}" for violation in plan.violations)
+    st.error(
+        "CVRP plan is infeasible, showing the Classic route instead:\n"
+        f"{bullets}\n\n"
+        "Add a truck, raise capacity, or extend the shift in the sidebar."
+    )
+
+
+def render_engine_comparison(route_comparison: dict, plan: Plan, n_trucks: int, capacity_kg: float) -> None:
+    st.subheader("Engine comparison")
+    classic_km = float(route_comparison["selected_optimized_distance_km"])
+    if plan.violations:
+        st.warning(
+            "CVRP found no feasible plan for the current fleet, so only the Classic "
+            f"single-loop result ({classic_km:.1f} km) is available."
+        )
+        return
+
+    cvrp_km = plan.total_distance_m / 1000.0
+    delta_km = classic_km - cvrp_km
+    delta_pct = (delta_km / classic_km * 100.0) if classic_km else 0.0
+    col_classic, col_cvrp, col_delta = st.columns(3)
+    col_classic.metric("Classic (2-opt), one loop", f"{classic_km:.1f} km")
+    col_cvrp.metric(f"CVRP (OR-Tools), {len(plan.routes)} truck(s)", f"{cvrp_km:.1f} km")
+    col_delta.metric("CVRP vs Classic", f"{delta_km:+.1f} km", delta=f"{delta_pct:+.1f}%")
+
+    truck_rows = [
+        {
+            "truck": route.truck_id,
+            "stops": len(route.site_ids),
+            "load (kg)": round(route.load_kg),
+            "capacity (kg)": round(capacity_kg),
+            "duration (min)": round(route.duration_s / 60),
+            "distance (km)": round(route.distance_m / 1000, 1),
+        }
+        for route in plan.routes
+    ]
+    stretch_dataframe(pd.DataFrame(truck_rows), hide_index=True)
+
+    caption = (
+        "Both engines solve the same selected bins on the same distance matrix. "
+        "Classic drives one unconstrained loop; CVRP splits stops across "
+        f"{n_trucks} truck(s) with capacity and shift limits, so its total can be "
+        "longer — that extra distance is the price of a physically executable plan."
+    )
+    if plan.dropped_site_ids:
+        caption += (
+            f" CVRP dropped {len(plan.dropped_site_ids)} optional bin(s) that did not "
+            "fit the fleet's capacity or shift."
+        )
+    st.caption(caption)
 
 
 def render_scenario_cards(predicted_df: pd.DataFrame) -> None:
     st.subheader("Scenario comparison")
+    st.caption("Threshold what-ifs use the Classic (2-opt) engine for fast recomputation.")
     scenarios = [
         ("Conservative", 85, "Collect only the most urgent bins."),
         ("Balanced", 75, "Default operating plan for the demo."),
@@ -837,12 +493,22 @@ def render_map_context(
     selected_bins_df: pd.DataFrame,
     savings: dict,
     route_comparison: dict,
+    fourth_stat: tuple[str, str] | None = None,
 ) -> None:
     selected_percent = (len(selected_bins_df) / len(predicted_df) * 100) if len(predicted_df) else 0
+    osrm_used = route_comparison.get("distance_source") == "osrm"
+    badge_class = "distance-badge osrm" if osrm_used else "distance-badge fallback"
+    badge_label = "road distances (OSRM)" if osrm_used else "straight-line est."
+    if fourth_stat is None:
+        fourth_stat = (
+            f"{route_comparison['two_opt_improvement_km']:.1f} km",
+            "2-opt route improvement",
+        )
+    fourth_stat_value, fourth_stat_label = fourth_stat
     st.markdown(
         f"""
         <div class="map-panel">
-            <h3>Optimized collection map</h3>
+            <h3>Optimized collection map <span class="{badge_class}">{badge_label}</span></h3>
             <p>
                 Dense Astana dispatch view with {len(predicted_df)} bins. Skipped bins are intentionally faint,
                 selected bins stay vivid, and the route is drawn above the map so the truck path remains readable.
@@ -869,8 +535,8 @@ def render_map_context(
                     <div class="map-stat-label">bins selected today</div>
                 </div>
                 <div class="map-stat">
-                    <div class="map-stat-value">{route_comparison["two_opt_improvement_km"]:.1f} km</div>
-                    <div class="map-stat-label">2-opt route improvement</div>
+                    <div class="map-stat-value">{fourth_stat_value}</div>
+                    <div class="map-stat-label">{fourth_stat_label}</div>
                 </div>
             </div>
         </div>
@@ -902,6 +568,23 @@ with st.sidebar:
     threshold = st.slider("Collection threshold (%)", min_value=50, max_value=95, value=75, step=5)
     district_filter = st.selectbox("District", ["All"] + DISTRICTS)
     waste_type_filter = st.selectbox("Waste type", ["All"] + WASTE_TYPES)
+    st.subheader("Routing")
+    engine = st.radio(
+        "Engine",
+        [ENGINE_CVRP, ENGINE_CLASSIC],
+        index=0,
+        help="CVRP plans per-truck routes with capacity and shift limits; "
+        "Classic keeps the legacy single-loop 2-opt route.",
+    )
+    n_trucks = st.slider("Trucks", min_value=MIN_TRUCKS, max_value=MAX_TRUCKS, value=2)
+    truck_capacity_kg = st.number_input(
+        "Truck capacity (kg)",
+        min_value=500,
+        max_value=20_000,
+        value=int(DEFAULT_TRUCK_CAPACITY_KG),
+        step=500,
+    )
+    shift_hours = st.slider("Shift length (h)", min_value=4, max_value=12, value=DEFAULT_SHIFT_HOURS)
     st.markdown(
         """
         <div class="sidebar-note">
@@ -915,7 +598,7 @@ with st.sidebar:
 
 
 render_hero(threshold, district_filter, waste_type_filter)
-render_pipeline(threshold)
+render_pipeline(threshold, engine)
 
 with st.spinner("Preparing data and model..."):
     ensure_data_exists()
@@ -930,10 +613,31 @@ if district_filter != "All":
 if waste_type_filter != "All":
     predicted_df = predicted_df[predicted_df["waste_type"] == waste_type_filter]
 
-selected_bins_df = predicted_df[predicted_df["predicted_fill_pct"] >= threshold].copy()
-route_comparison = compare_routes(predicted_df, selected_bins_df, DEPOT)
-savings = calculate_savings(predicted_df, selected_bins_df, route_comparison)
-route_order_df = route_points_to_dataframe(route_comparison["route_points_optimized"])
+selected_bins_df = predicted_df[predicted_df["must_serve"]].copy()
+route_comparison = apply_road_distances(compare_routes(predicted_df, selected_bins_df, DEPOT))
+
+with st.spinner("Solving CVRP plan..."):
+    cvrp_plan = solve_cvrp(selected_bins_df, int(n_trucks), float(truck_capacity_kg), float(shift_hours))
+cvrp_active = engine == ENGINE_CVRP and not cvrp_plan.violations and not selected_bins_df.empty
+
+if cvrp_active:
+    savings_comparison = {
+        **route_comparison,
+        "selected_optimized_distance_km": round(cvrp_plan.total_distance_m / 1000, 3),
+    }
+    map_context_comparison = {
+        **savings_comparison,
+        "distance_source": cvrp_plan.distance_source,
+    }
+    map_fourth_stat = (f"{len(cvrp_plan.routes)}/{n_trucks}", "trucks routed (CVRP)")
+    route_order_df = cvrp_route_order_df(cvrp_plan, selected_bins_df)
+else:
+    savings_comparison = route_comparison
+    map_context_comparison = route_comparison
+    map_fourth_stat = None
+    route_order_df = route_points_to_dataframe(route_comparison["route_points_optimized"])
+
+savings = calculate_savings(predicted_df, selected_bins_df, savings_comparison)
 
 metrics = load_metrics()
 if metrics:
@@ -944,18 +648,32 @@ if metrics:
 
 render_recommendation(selected_bins_df, predicted_df, savings)
 render_critical_alert(selected_bins_df)
+if engine == ENGINE_CVRP and cvrp_plan.violations:
+    render_cvrp_violations(cvrp_plan)
 render_kpis(savings, predicted_df)
 
-render_map_context(predicted_df, selected_bins_df, savings, route_comparison)
-stretch_plotly_chart(
-    create_route_map(
+render_map_context(
+    predicted_df, selected_bins_df, savings, map_context_comparison, fourth_stat=map_fourth_stat
+)
+if cvrp_active:
+    map_figure = create_fleet_route_map(
+        predicted_df,
+        selected_bins_df,
+        plan_truck_route_points(cvrp_plan, selected_bins_df),
+        DEPOT,
+        threshold,
+    )
+else:
+    map_figure = create_route_map(
         predicted_df,
         selected_bins_df,
         route_comparison["route_points_optimized"],
         DEPOT,
         threshold,
     )
-)
+stretch_plotly_chart(map_figure)
+
+render_engine_comparison(route_comparison, cvrp_plan, int(n_trucks), float(truck_capacity_kg))
 
 chart_col_1, chart_col_2 = st.columns(2)
 
@@ -1164,8 +882,15 @@ with st.expander("All predicted bins"):
         hide_index=True,
     )
 
-st.info(
-    "How EcoRoute AI works: 1. Predict fill level using ML. 2. Select bins above the collection threshold. "
-    "3. Build a route using nearest-neighbor. 4. Improve it with 2-opt. 5. Estimate distance, time, fuel, "
-    "cost, and CO₂ savings."
-)
+if engine == ENGINE_CVRP:
+    st.info(
+        "How EcoRoute AI works: 1. Predict fill level using ML. 2. Select bins above the collection "
+        "threshold. 3. Solve a capacitated vehicle routing problem (OR-Tools) with truck capacity and "
+        "shift limits. 4. Estimate distance, time, fuel, cost, and CO₂ savings."
+    )
+else:
+    st.info(
+        "How EcoRoute AI works: 1. Predict fill level using ML. 2. Select bins above the collection threshold. "
+        "3. Build a route using nearest-neighbor. 4. Improve it with 2-opt. 5. Estimate distance, time, fuel, "
+        "cost, and CO₂ savings."
+    )

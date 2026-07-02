@@ -10,3 +10,6 @@ venv/
 !.streamlit/
 !.streamlit/config.toml
 .ipynb_checkpoints/
+data/cache/
+.claude/settings.local.json
+outputs/
