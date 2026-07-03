@@ -1,13 +1,27 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from pathlib import Path
 
 import joblib
 import pandas as pd
 import plotly.express as px
+import requests
 import streamlit as st
 
+from src.app_logic import (
+    MODE_LIVE_PHOTO,
+    MODE_SIMULATION,
+    MODES,
+    SAVINGS_TARGET_TEXT,
+    SIMULATED_BANNER_TEXT,
+    confirmed_observations,
+    merge_observations,
+    observation_rows,
+    observations_to_plan_sites,
+    show_simulated_banner,
+)
 from src.data_generator import (
     ASTANA_LATITUDE,
     ASTANA_LONGITUDE,
@@ -27,6 +41,12 @@ from src.optimize.solver import (
     Truck,
     plan_routes,
 )
+from src.photo_fill.estimator import (
+    FILL_CLASSES,
+    UNCERTAIN,
+    EstimationError,
+    estimate_fill,
+)
 from src.predict import assign_priority, predict_fill_levels
 from src.routing import compare_routes
 from src.savings import calculate_savings
@@ -39,7 +59,13 @@ ENGINE_CVRP = "CVRP (OR-Tools)"
 ENGINE_CLASSIC = "Classic (2-opt)"
 DEFAULT_SHIFT_HOURS = 8
 
+MODE_TOGGLE_KEY = "mode_toggle"
+SESSION_PHOTO_ESTIMATES = "photo_estimates"
+SESSION_LIVE_PLAN = "live_plan_observations"
+UPLOAD_TYPES = ["jpg", "jpeg", "png"]
+
 STYLES_PATH = Path(__file__).parent / "assets" / "styles.css"
+PHOTO_EVAL_REPORT_PATH = Path(__file__).parent / "reports" / "photo_eval.md"
 
 PRIORITY_COLORS = {
     "Critical": "#dc2626",
@@ -78,6 +104,15 @@ st.set_page_config(
 def inject_styles() -> None:
     css = STYLES_PATH.read_text(encoding="utf-8")
     st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
+
+
+def render_simulated_banner() -> None:
+    """Honesty invariant: simulated savings/metrics always carry this banner."""
+    if show_simulated_banner(st.session_state.get(MODE_TOGGLE_KEY, MODE_SIMULATION)):
+        st.markdown(
+            f'<div class="sim-banner">{SIMULATED_BANNER_TEXT}</div>',
+            unsafe_allow_html=True,
+        )
 
 
 def apply_chart_theme(fig, height: int = 360):
@@ -198,6 +233,7 @@ def model_feature_importance_chart():
 
 
 def render_kpis(savings: dict, predicted_df: pd.DataFrame) -> None:
+    render_simulated_banner()
     avg_fill = predicted_df["predicted_fill_pct"].mean() if not predicted_df.empty else 0
     cost_saved = savings["estimated_fuel_cost_saved_kzt"]
     cost_label = f"{cost_saved / 1000:.1f}k KZT" if cost_saved >= 1000 else f"{cost_saved:,.0f} KZT"
@@ -218,6 +254,7 @@ def render_kpis(savings: dict, predicted_df: pd.DataFrame) -> None:
         columns = st.columns(4)
         for column, (label, value, delta) in zip(columns, kpis[start : start + 4]):
             column.metric(label, value, delta=delta)
+    st.caption(SAVINGS_TARGET_TEXT)
 
 
 def render_recommendation(selected_bins_df: pd.DataFrame, predicted_df: pd.DataFrame, savings: dict) -> None:
@@ -231,7 +268,7 @@ def render_recommendation(selected_bins_df: pd.DataFrame, predicted_df: pd.DataF
     district_phrase = " and ".join(top_districts) if top_districts else "the filtered area"
     recommendation = (
         f"Today, EcoRoute AI recommends collecting {len(selected_bins_df)} out of {len(predicted_df)} bins, "
-        f"prioritizing {district_phrase} districts. Estimated savings: "
+        f"prioritizing {district_phrase} districts. Estimated savings (simulated): "
         f"{savings['distance_saved_km']:.1f} km, "
         f"{savings['estimated_total_time_saved_minutes']:.0f} minutes, "
         f"{savings['estimated_fuel_saved_liters']:.1f} liters of fuel, "
@@ -268,7 +305,7 @@ def render_hero(threshold: int | float, district_filter: str, waste_type_filter:
         f"""
         <section class="eco-hero">
             <div class="eco-hero-content">
-                <div class="eco-eyebrow">SmartScape Hackathon · Ecology & Urban Environment</div>
+                <div class="eco-eyebrow">SmartScape Hackathon · Ecology & Urban Environment · Simulation mode</div>
                 <h1>EcoRoute AI</h1>
                 <p>
                     Predict near-full bins, prioritize the right stops, and build a cleaner truck route
@@ -318,7 +355,7 @@ def render_pipeline(threshold: int | float, engine: str) -> None:
             </div>
             <div class="eco-step">
                 <strong>4. Quantify</strong>
-                <span>Distance, time, fuel, CO₂, and cost savings are estimated.</span>
+                <span>Savings are simulated in this demo; real-world deployments target 15–25%.</span>
             </div>
         </div>
         """,
@@ -403,6 +440,7 @@ def render_cvrp_violations(plan: Plan) -> None:
 
 def render_engine_comparison(route_comparison: dict, plan: Plan, n_trucks: int, capacity_kg: float) -> None:
     st.subheader("Engine comparison")
+    render_simulated_banner()
     classic_km = float(route_comparison["selected_optimized_distance_km"])
     if plan.violations:
         st.warning(
@@ -448,6 +486,7 @@ def render_engine_comparison(route_comparison: dict, plan: Plan, n_trucks: int, 
 
 def render_scenario_cards(predicted_df: pd.DataFrame) -> None:
     st.subheader("Scenario comparison")
+    render_simulated_banner()
     st.caption("Threshold what-ifs use the Classic (2-opt) engine for fast recomputation.")
     scenarios = [
         ("Conservative", 85, "Collect only the most urgent bins."),
@@ -505,6 +544,7 @@ def render_map_context(
             "2-opt route improvement",
         )
     fourth_stat_value, fourth_stat_label = fourth_stat
+    render_simulated_banner()
     st.markdown(
         f"""
         <div class="map-panel">
@@ -561,21 +601,228 @@ def route_points_to_dataframe(route_points: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def estimate_uploaded_photo(upload) -> dict:
+    """Run the live estimator on one uploaded photo; errors become table-safe dicts."""
+    suffix = Path(upload.name).suffix or ".jpg"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as handle:
+        handle.write(upload.getvalue())
+        temp_path = Path(handle.name)
+    try:
+        result = estimate_fill(temp_path)
+        return {
+            "photo": upload.name,
+            "cls": result["cls"],
+            "confidence": result["confidence"],
+        }
+    except (EstimationError, requests.RequestException) as exc:
+        return {"photo": upload.name, "error": str(exc)}
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def render_photo_eval_page() -> None:
+    st.subheader("Photo model evaluation")
+    if PHOTO_EVAL_REPORT_PATH.exists():
+        st.markdown(PHOTO_EVAL_REPORT_PATH.read_text(encoding="utf-8"))
+    else:
+        st.info(
+            "No evaluation report yet. Collect labeled field photos "
+            "(`data/photos/` + `labels.csv`), then run:\n\n"
+            "```\npython -m src.photo_fill.evaluate\n```\n\n"
+            "Accuracy, macro-F1, and the per-class confusion matrix "
+            "(by-site split, SPEC_V1 6.2) render here."
+        )
+
+
+def render_photo_estimates_table(current: list[dict], known_site_ids: list[str]) -> pd.DataFrame:
+    st.subheader("Photo estimates")
+    st.caption(
+        "Rows marked ⚠️ are below the confidence threshold and excluded by default — "
+        "check the photo yourself and set the class to include them. Assign a site "
+        "to every row you want in the plan."
+    )
+    edited = st.data_editor(
+        observation_rows(current, known_site_ids),
+        key="photo_observations_editor",
+        hide_index=True,
+        column_config={
+            "photo": st.column_config.TextColumn("photo", disabled=True),
+            "site_id": st.column_config.SelectboxColumn("site", options=known_site_ids),
+            "cls": st.column_config.SelectboxColumn(
+                "class", options=list(FILL_CLASSES) + [UNCERTAIN]
+            ),
+            "confidence": st.column_config.NumberColumn(
+                "confidence", disabled=True, format="%.2f"
+            ),
+            "flag": st.column_config.TextColumn("status", disabled=True),
+            "include": st.column_config.CheckboxColumn("include"),
+        },
+    )
+    return edited
+
+
+def render_live_plan(
+    bins_df: pd.DataFrame, n_trucks: int, truck_capacity_kg: float, shift_hours: float
+) -> None:
+    st.subheader("Today's plan")
+    plan_observations = st.session_state.get(SESSION_LIVE_PLAN)
+    if plan_observations is None or plan_observations.empty:
+        st.info(
+            "No sites in today's plan yet. Upload photos, review the table, "
+            'then click "Add to today\'s plan".'
+        )
+        return
+
+    sites = observations_to_plan_sites(bins_df, plan_observations)
+    with st.spinner("Recomputing CVRP routes..."):
+        plan = solve_cvrp(sites, n_trucks, truck_capacity_kg, shift_hours)
+
+    if plan.violations:
+        bullets = "\n".join(f"- {violation}" for violation in plan.violations)
+        st.error(
+            "CVRP plan is infeasible for the current fleet:\n"
+            f"{bullets}\n\n"
+            "Add a truck, raise capacity, or extend the shift in the sidebar."
+        )
+    else:
+        distance_label = (
+            "road distances (OSRM)"
+            if plan.distance_source == "osrm"
+            else "straight-line estimate (OSRM offline)"
+        )
+        col_sites, col_distance, col_trucks = st.columns(3)
+        col_sites.metric("Sites in plan", len(sites))
+        col_distance.metric("Planned distance", f"{plan.total_distance_m / 1000:.1f} km")
+        col_trucks.metric("Trucks routed", f"{len(plan.routes)}/{n_trucks}")
+        st.caption(
+            f"Distance source: {distance_label}. Fill levels come from live photos; "
+            "site coordinates come from the demo registry."
+        )
+        map_figure = create_fleet_route_map(
+            sites, sites, plan_truck_route_points(plan, sites), DEPOT, threshold=0
+        )
+        stretch_plotly_chart(map_figure)
+        stretch_dataframe(
+            sites[
+                [
+                    "bin_id",
+                    "district",
+                    "photo_class",
+                    "photo_confidence",
+                    "predicted_fill_pct",
+                    "priority",
+                ]
+            ],
+            hide_index=True,
+        )
+        with st.expander("Truck route order"):
+            stretch_dataframe(cvrp_route_order_df(plan, sites), hide_index=True)
+
+    if st.button("Clear today's plan"):
+        st.session_state.pop(SESSION_LIVE_PLAN, None)
+        st.rerun()
+
+
+def render_photo_plan_tab(
+    bins_df: pd.DataFrame, n_trucks: int, truck_capacity_kg: float, shift_hours: float
+) -> None:
+    known_site_ids = bins_df["bin_id"].astype(str).tolist()
+    uploads = st.file_uploader(
+        "Container photos (multiple allowed)",
+        type=UPLOAD_TYPES,
+        accept_multiple_files=True,
+        help="Whole container visible, 2–5 m distance (capture protocol, SPEC_V1 6.2).",
+    )
+
+    estimates_cache = st.session_state.setdefault(SESSION_PHOTO_ESTIMATES, {})
+    current: list[dict] = []
+    errors: list[dict] = []
+    for upload in uploads or []:
+        key = f"{upload.name}:{upload.size}"
+        if key not in estimates_cache:
+            with st.spinner(f"Estimating fill level: {upload.name}"):
+                estimates_cache[key] = estimate_uploaded_photo(upload)
+        result = estimates_cache[key]
+        (errors if "error" in result else current).append(result)
+
+    for result in errors:
+        st.error(f"{result['photo']}: {result['error']}")
+    if errors and st.button("Retry failed photos"):
+        failed_names = {result["photo"] for result in errors}
+        for key in [k for k in estimates_cache if k.rsplit(":", 1)[0] in failed_names]:
+            del estimates_cache[key]
+        st.rerun()
+
+    if not current:
+        st.info(
+            "Upload container photos to estimate fill levels. Each photo gets a class "
+            "(empty / half / full / overflowing) and a confidence from the live model."
+        )
+    else:
+        edited = render_photo_estimates_table(current, known_site_ids)
+        confirmed = confirmed_observations(edited)
+        excluded = len(edited) - len(confirmed)
+        if excluded:
+            st.caption(
+                f"{excluded} row(s) stay out of the plan: unchecked, no site assigned, "
+                "or still uncertain."
+            )
+        if st.button(
+            f"Add to today's plan ({len(confirmed)} site(s))",
+            type="primary",
+            disabled=confirmed.empty,
+        ):
+            st.session_state[SESSION_LIVE_PLAN] = merge_observations(
+                st.session_state.get(SESSION_LIVE_PLAN), confirmed
+            )
+
+    render_live_plan(bins_df, n_trucks, truck_capacity_kg, shift_hours)
+
+
+def render_live_photo_mode(
+    bins_df: pd.DataFrame, n_trucks: int, truck_capacity_kg: float, shift_hours: float
+) -> None:
+    st.title("EcoRoute AI — Live photo mode")
+    st.caption(
+        "Fill levels on this page come from the live photo estimator (VLM v0), not the "
+        "simulation. Site coordinates still come from the demo registry."
+    )
+    plan_tab, eval_tab = st.tabs(["Plan from photos", "Photo model evaluation"])
+    with plan_tab:
+        render_photo_plan_tab(bins_df, n_trucks, truck_capacity_kg, shift_hours)
+    with eval_tab:
+        render_photo_eval_page()
+
+
 inject_styles()
 
 with st.sidebar:
     st.header("Operations Control")
-    threshold = st.slider("Collection threshold (%)", min_value=50, max_value=95, value=75, step=5)
-    district_filter = st.selectbox("District", ["All"] + DISTRICTS)
-    waste_type_filter = st.selectbox("Waste type", ["All"] + WASTE_TYPES)
-    st.subheader("Routing")
-    engine = st.radio(
-        "Engine",
-        [ENGINE_CVRP, ENGINE_CLASSIC],
+    mode = st.radio(
+        "Mode",
+        list(MODES),
         index=0,
-        help="CVRP plans per-truck routes with capacity and shift limits; "
-        "Classic keeps the legacy single-loop 2-opt route.",
+        key=MODE_TOGGLE_KEY,
+        help="Simulation: synthetic 180-bin sandbox for the demo. "
+        "Live photo: upload real container photos; confirmed sites form today's plan.",
     )
+    threshold, district_filter, waste_type_filter = 75, "All", "All"
+    if mode == MODE_SIMULATION:
+        threshold = st.slider("Collection threshold (%)", min_value=50, max_value=95, value=75, step=5)
+        district_filter = st.selectbox("District", ["All"] + DISTRICTS)
+        waste_type_filter = st.selectbox("Waste type", ["All"] + WASTE_TYPES)
+    st.subheader("Routing")
+    if mode == MODE_SIMULATION:
+        engine = st.radio(
+            "Engine",
+            [ENGINE_CVRP, ENGINE_CLASSIC],
+            index=0,
+            help="CVRP plans per-truck routes with capacity and shift limits; "
+            "Classic keeps the legacy single-loop 2-opt route.",
+        )
+    else:
+        engine = ENGINE_CVRP
+        st.caption("Live photo mode always plans with CVRP (OR-Tools).")
     n_trucks = st.slider("Trucks", min_value=MIN_TRUCKS, max_value=MAX_TRUCKS, value=2)
     truck_capacity_kg = st.number_input(
         "Truck capacity (kg)",
@@ -585,20 +832,29 @@ with st.sidebar:
         step=500,
     )
     shift_hours = st.slider("Shift length (h)", min_value=4, max_value=12, value=DEFAULT_SHIFT_HOURS)
-    st.markdown(
-        """
-        <div class="sidebar-note">
-            <strong>Demo scale</strong>
-            180 live bins represent one dispatch zone for a truck shift. The model trains on
-            4,500 synthetic historical observations so the demo stays fast and stable.
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    if mode == MODE_SIMULATION:
+        st.markdown(
+            """
+            <div class="sidebar-note">
+                <strong>Demo scale</strong>
+                180 live bins represent one dispatch zone for a truck shift. The model trains on
+                4,500 synthetic historical observations so the demo stays fast and stable.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+if mode == MODE_LIVE_PHOTO:
+    with st.spinner("Preparing site registry..."):
+        ensure_data_exists()
+    render_live_photo_mode(load_bins(), int(n_trucks), float(truck_capacity_kg), float(shift_hours))
+    st.stop()
 
 
 render_hero(threshold, district_filter, waste_type_filter)
 render_pipeline(threshold, engine)
+render_simulated_banner()
 
 with st.spinner("Preparing data and model..."):
     ensure_data_exists()
@@ -642,8 +898,9 @@ savings = calculate_savings(predicted_df, selected_bins_df, savings_comparison)
 metrics = load_metrics()
 if metrics:
     st.caption(
-        f"Model: {metrics.get('model_name', 'RandomForestRegressor')} | "
-        f"MAE {metrics.get('mae')} | RMSE {metrics.get('rmse')} | R² {metrics.get('r2')}"
+        f"Demo model: {metrics.get('model_name', 'RandomForestRegressor')} | "
+        f"MAE {metrics.get('mae')} | RMSE {metrics.get('rmse')} | R² {metrics.get('r2')} — "
+        "validated on simulated data only, not a field-accuracy claim."
     )
 
 render_recommendation(selected_bins_df, predicted_df, savings)
@@ -675,6 +932,7 @@ stretch_plotly_chart(map_figure)
 
 render_engine_comparison(route_comparison, cvrp_plan, int(n_trucks), float(truck_capacity_kg))
 
+render_simulated_banner()
 chart_col_1, chart_col_2 = st.columns(2)
 
 with chart_col_1:
@@ -840,6 +1098,7 @@ with st.expander("Model internals: feature importance"):
         stretch_plotly_chart(feature_fig)
 
 st.subheader("Selected bins for collection")
+render_simulated_banner()
 selected_table_columns = [
     "bin_id",
     "district",

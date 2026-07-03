@@ -495,3 +495,23 @@ div[data-baseweb="select"] > div,
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 }
+
+.sim-banner {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    margin: 0.35rem 0 0.55rem;
+    padding: 0.42rem 0.75rem;
+    border: 1px solid #fcd34d;
+    border-radius: 8px;
+    background: #fffbeb;
+    color: #92400e;
+    font-size: 0.82rem;
+    font-weight: 640;
+    letter-spacing: 0.01em;
+}
+
+.sim-banner::before {
+    content: "⚠";
+    font-size: 0.9rem;
+}

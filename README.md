@@ -45,7 +45,7 @@ Scenario comparison (vs. visiting all bins on a fixed route):
 | Balanced | 75% | 29 | 266.2 km |
 | Aggressive | 65% | 52 | 246.6 km |
 
-> Metrics are measured on a **synthetic** dataset (see Data). They demonstrate the pipeline works end-to-end; real-world accuracy will be validated on live sensor data during a pilot.
+> Metrics are measured on a **synthetic** dataset (see Data), so every savings figure above is **simulated**. They demonstrate the pipeline works end-to-end. Real-world route-optimization deployments typically report **15–25% distance savings** — that is the pilot target range, not the demo numbers.
 
 ## Key features
 
