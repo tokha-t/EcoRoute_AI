@@ -45,13 +45,13 @@ from src.photo_fill.estimator import (
     FILL_CLASSES,
     UNCERTAIN,
     EstimationError,
+    api_key_available,
     estimate_fill,
 )
 from src.predict import assign_priority, predict_fill_levels
 from src.routing import compare_routes
 from src.savings import calculate_savings
 from src.train_model import METRICS_PATH, MODEL_PATH, train_and_save_model
-
 
 DEPOT = {"latitude": ASTANA_LATITUDE, "longitude": ASTANA_LONGITUDE}
 
@@ -726,6 +726,15 @@ def render_live_plan(
 def render_photo_plan_tab(
     bins_df: pd.DataFrame, n_trucks: int, truck_capacity_kg: float, shift_hours: float
 ) -> None:
+    if not api_key_available():
+        st.warning(
+            "**API key required** — live photo estimation calls the Anthropic "
+            "vision API. Set `ANTHROPIC_API_KEY` in the shell that launches the "
+            "app, then restart. Simulation mode works fully offline."
+        )
+        render_live_plan(bins_df, n_trucks, truck_capacity_kg, shift_hours)
+        return
+
     known_site_ids = bins_df["bin_id"].astype(str).tolist()
     uploads = st.file_uploader(
         "Container photos (multiple allowed)",

@@ -5,5 +5,5 @@
   "train_rows": 3600,
   "test_rows": 900,
   "model_name": "RandomForestRegressor",
-  "generated_at": "2026-06-13T18:46:00.000034+00:00"
+  "generated_at": "2026-07-03T22:07:23.081812+00:00"
 }

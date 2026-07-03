@@ -7,7 +7,6 @@ import pandas as pd
 
 from src.predict import MAX_INTERVAL_DAYS, assign_priority
 
-
 STYLES_PATH = Path(__file__).resolve().parents[1] / "assets" / "styles.css"
 
 

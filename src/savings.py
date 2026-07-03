@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pandas as pd
 
-
 AVERAGE_TRUCK_SPEED_KMH = 25
 FUEL_CONSUMPTION_LITERS_PER_KM = 0.35
 CO2_KG_PER_LITER_DIESEL = 2.68

@@ -17,6 +17,7 @@ Demo city: Astana. Owner: solo founder; keep everything simple enough for one pe
 ## Commands
 - Run app: streamlit run app.py
 - Tests: python -m pytest tests/ -q   (ALWAYS run before declaring any task done)
+- Lint: ruff check .   (dev deps: pip install -r requirements-dev.txt)
 - Retrain demo model: python -m src.train_model
 
 ## Rules

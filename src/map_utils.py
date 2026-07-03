@@ -5,7 +5,6 @@ import plotly.graph_objects as go
 
 from src.data_generator import ASTANA_LATITUDE, ASTANA_LONGITUDE
 
-
 PRIORITY_COLORS = {
     "Critical": "#dc2626",
     "High": "#f97316",

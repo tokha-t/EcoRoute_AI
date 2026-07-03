@@ -56,7 +56,9 @@ distance savings; that's the range we sell, not these demo numbers."
 ## Failure playbook
 
 - **OSRM down** → badge says "straight-line est." — acknowledge it, keep going.
-- **No API key / no network in live mode** → photo rows show an error + "Retry failed photos";
+- **No API key** → live mode shows an "API key required" notice instead of the uploader;
+  set `ANTHROPIC_API_KEY` and restart, or narrate the flow over the Simulation-mode map.
+- **No network in live mode (key set)** → photo rows show an error + "Retry failed photos";
   fall back to narrating the flow over the editable table with the Simulation-mode map.
 - **CVRP infeasible** (too much load for the fleet) → the app says exactly why; add a truck in
   the sidebar and let it recompute — that's a feature moment, not a bug.

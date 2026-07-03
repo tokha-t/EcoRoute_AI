@@ -1,0 +1,10 @@
+# Lint config for the final-QA sweep: default correctness rules (pyflakes +
+# pycodestyle errors) plus import sorting. No formatter — the codebase predates it.
+target-version = "py311"
+line-length = 110
+
+[lint]
+extend-select = ["I"]
+
+[lint.isort]
+known-first-party = ["src", "tests"]

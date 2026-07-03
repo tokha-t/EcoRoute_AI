@@ -10,7 +10,6 @@ from src.data_generator import DATA_DIR, ensure_data_exists
 from src.preprocessing import FEATURE_COLUMNS, prepare_features
 from src.train_model import MODEL_PATH, train_and_save_model
 
-
 SAMPLE_PREDICTIONS_PATH = DATA_DIR / "sample_predictions.csv"
 
 # Max-interval rule (P0, see SPEC_V1 6.4): a site overdue this many days is always

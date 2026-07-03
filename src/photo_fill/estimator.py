@@ -77,6 +77,11 @@ class MalformedOutputError(EstimationError):
     """The API responded, but not with parseable, schema-valid JSON."""
 
 
+def api_key_available() -> bool:
+    """True when ANTHROPIC_API_KEY is set — the UI gates live photo mode on this."""
+    return bool(os.environ.get("ANTHROPIC_API_KEY", ""))
+
+
 def _api_key() -> str:
     key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not key:

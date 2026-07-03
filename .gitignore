@@ -16,3 +16,4 @@ outputs/
 data/photos/*
 !data/photos/labels.csv
 data/photos_inbox/
+.claude/launch.json

@@ -15,7 +15,6 @@ from src.optimize.distances import (
     haversine_meters,
 )
 
-
 DEPOT = (51.1694, 71.4491)
 POINT_A = (51.1605, 71.4704)
 POINT_B = (51.1801, 71.4102)

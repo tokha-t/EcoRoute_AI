@@ -17,7 +17,6 @@ from sklearn.preprocessing import OneHotEncoder
 from src.data_generator import TRAINING_DATA_PATH, ensure_data_exists
 from src.preprocessing import CATEGORICAL_COLUMNS, NUMERIC_COLUMNS, prepare_features
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MODELS_DIR = PROJECT_ROOT / "models"
 MODEL_PATH = MODELS_DIR / "fill_level_model.pkl"

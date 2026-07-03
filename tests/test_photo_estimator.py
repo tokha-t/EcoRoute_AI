@@ -18,6 +18,7 @@ from src.photo_fill.estimator import (
     UNCERTAIN,
     EstimationError,
     MalformedOutputError,
+    api_key_available,
     estimate_fill,
 )
 
@@ -139,6 +140,19 @@ class EstimateFillTest(unittest.TestCase):
 
 def _refuse_network(*args, **kwargs):
     raise AssertionError("network must not be hit on this path")
+
+
+class ApiKeyAvailableTest(unittest.TestCase):
+    def test_true_when_key_is_set(self) -> None:
+        with patch.dict(os.environ, FAKE_KEY_ENV):
+            self.assertTrue(api_key_available())
+
+    def test_false_when_key_is_missing_or_empty(self) -> None:
+        env = {key: value for key, value in os.environ.items() if key != "ANTHROPIC_API_KEY"}
+        with patch.dict(os.environ, env, clear=True):
+            self.assertFalse(api_key_available())
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": ""}):
+            self.assertFalse(api_key_available())
 
 
 if __name__ == "__main__":

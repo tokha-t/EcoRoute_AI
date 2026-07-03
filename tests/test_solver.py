@@ -18,7 +18,6 @@ from src.optimize.solver import (
     plan_routes,
 )
 
-
 DEPOT = (51.1694, 71.4491)
 DETOUR = 1.4
 SPEED_MPS = 25.0 / 3.6

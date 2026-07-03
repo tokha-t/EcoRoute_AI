@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pandas as pd
 
-
 CATEGORICAL_COLUMNS = ["district", "waste_type"]
 NUMERIC_COLUMNS = [
     "capacity_liters",
