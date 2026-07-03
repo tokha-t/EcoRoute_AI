@@ -13,3 +13,6 @@ venv/
 data/cache/
 .claude/settings.local.json
 outputs/
+data/photos/*
+!data/photos/labels.csv
+data/photos_inbox/
