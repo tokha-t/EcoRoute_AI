@@ -24,14 +24,23 @@ from pathlib import Path
 import requests
 from PIL import Image, ImageOps
 
+from src.config import CONFIDENCE_THRESHOLD, VLM_MODEL
+
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
-MODEL = "claude-haiku-4-5"
+MODEL = VLM_MODEL
 MAX_TOKENS = 512
 REQUEST_TIMEOUT_SECONDS = 30.0
-CONFIDENCE_THRESHOLD = 0.6
 MAX_IMAGE_EDGE = 1568  # downscale phone photos: fewer tokens, same class signal
 JPEG_QUALITY = 90
+
+# Upload guards (SPEC_V1 6.2 hardening). The extension allowlist and size cap run
+# in the app's photo path before any temp file is written; the pixel cap makes PIL
+# raise Image.DecompressionBombError instead of decoding a decompression bomb, and
+# estimate_fill() turns that into an EstimationError (table-safe error row).
+Image.MAX_IMAGE_PIXELS = 40_000_000
+MAX_UPLOAD_BYTES = 12 * 1024 * 1024
+ALLOWED_UPLOAD_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".webp"})
 
 FILL_CLASSES = ("empty", "half", "full", "overflowing")
 UNCERTAIN = "uncertain"
@@ -80,6 +89,24 @@ class MalformedOutputError(EstimationError):
 def api_key_available() -> bool:
     """True when ANTHROPIC_API_KEY is set — the UI gates live photo mode on this."""
     return bool(os.environ.get("ANTHROPIC_API_KEY", ""))
+
+
+def upload_rejection_reason(filename: str, size_bytes: int) -> str | None:
+    """Why an uploaded photo must be rejected, or None if it passes the guards.
+
+    Enforces the extension allowlist (case-insensitive) and MAX_UPLOAD_BYTES cap.
+    Both checks are cheap and side-effect free so the app can run them before
+    writing any temp file and turn the message into a table-safe error row instead
+    of raising (SPEC_V1 6.2 hardening).
+    """
+    suffix = Path(filename).suffix.lower()
+    if suffix not in ALLOWED_UPLOAD_EXTENSIONS:
+        allowed = ", ".join(sorted(ALLOWED_UPLOAD_EXTENSIONS))
+        return f"unsupported file type '{suffix or filename}' (allowed: {allowed})"
+    if size_bytes > MAX_UPLOAD_BYTES:
+        max_mb = MAX_UPLOAD_BYTES // (1024 * 1024)
+        return f"file too large ({size_bytes / (1024 * 1024):.1f} MB, max {max_mb} MB)"
+    return None
 
 
 def _api_key() -> str:
@@ -186,7 +213,12 @@ def estimate_fill(
         raise EstimationError(f"image not found: {image_path}")
 
     api_key = _api_key()
-    image_data, media_type = _encode_image(image_path)
+    try:
+        image_data, media_type = _encode_image(image_path)
+    except Image.DecompressionBombError as exc:
+        raise EstimationError(
+            f"image rejected by decompression-bomb guard: {image_path.name}"
+        ) from exc
     payload = _build_payload(image_data, media_type, model)
 
     last_error: MalformedOutputError | None = None

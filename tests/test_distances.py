@@ -140,6 +140,11 @@ class OSRMTableTest(unittest.TestCase):
 
         self.assertEqual(empty.meters, [])
         self.assertEqual(single.meters, [[0.0]])
+        # <2 points is labeled "trivial", never "osrm": the UI badge treats only
+        # source=="osrm" as real road distances, so trivial must not masquerade.
+        self.assertEqual(empty.source, "trivial")
+        self.assertEqual(single.source, "trivial")
+        self.assertFalse(empty.fallback_used)
         self.assertFalse(single.fallback_used)
 
 

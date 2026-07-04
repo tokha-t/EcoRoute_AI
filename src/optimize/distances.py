@@ -17,12 +17,13 @@ from typing import Sequence
 
 import requests
 
+from src.config import DETOUR_FACTOR
+
 Point = tuple[float, float]  # (latitude, longitude)
 
 OSRM_BASE_URL = "http://localhost:5000"
 DEFAULT_MODE = "driving"
 OSRM_TIMEOUT_SECONDS = 5.0
-DETOUR_FACTOR = 1.4  # straight-line -> road-distance estimate (spec 6.3)
 FALLBACK_SPEED_KMH = 25.0  # mirrors savings.AVERAGE_TRUCK_SPEED_KMH
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CACHE_DIR = PROJECT_ROOT / "data" / "cache"
@@ -39,7 +40,7 @@ class DistanceMatrix:
     seconds: list[list[float]]
     meters: list[list[float]]
     fallback_used: bool
-    source: str  # "osrm" | "haversine"
+    source: str  # "osrm" | "haversine" | "trivial"
 
 
 def haversine_meters(a: Point, b: Point) -> float:
@@ -174,7 +175,9 @@ def get_matrix(
     rounded = _rounded_points(points)
     if len(rounded) < 2:
         zeros = [[0.0] * len(rounded) for _ in rounded]
-        return DistanceMatrix(seconds=zeros, meters=[row[:] for row in zeros], fallback_used=False, source="osrm")
+        return DistanceMatrix(
+            seconds=zeros, meters=[row[:] for row in zeros], fallback_used=False, source="trivial"
+        )
 
     cache_file = _cache_path(cache_dir, rounded, mode)
     cached = _read_cache(cache_file, len(rounded))

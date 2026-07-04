@@ -10,9 +10,11 @@ from unittest.mock import patch
 from PIL import Image
 
 from src.photo_fill.estimator import (
+    ALLOWED_UPLOAD_EXTENSIONS,
     ANTHROPIC_VERSION,
     CONFIDENCE_THRESHOLD,
     FILL_CLASSES,
+    MAX_UPLOAD_BYTES,
     MODEL,
     PCT_RANGES,
     UNCERTAIN,
@@ -20,6 +22,7 @@ from src.photo_fill.estimator import (
     MalformedOutputError,
     api_key_available,
     estimate_fill,
+    upload_rejection_reason,
 )
 
 FAKE_KEY_ENV = {"ANTHROPIC_API_KEY": "test-key-not-real"}
@@ -137,6 +140,19 @@ class EstimateFillTest(unittest.TestCase):
                 with self.assertRaises(EstimationError):
                     estimate_fill(Path(self._tmp.name) / "nope.jpg")
 
+    def test_decompression_bomb_becomes_estimation_error(self) -> None:
+        # A decompression bomb makes PIL raise DecompressionBombError while
+        # decoding; estimate_fill must convert it to EstimationError (the same
+        # table-safe path as other failures) and never reach the API.
+        with patch.dict(os.environ, FAKE_KEY_ENV):
+            with patch("src.photo_fill.estimator.requests.post", _refuse_network):
+                with patch(
+                    "src.photo_fill.estimator.ImageOps.exif_transpose",
+                    side_effect=Image.DecompressionBombError("exceeds pixel limit"),
+                ):
+                    with self.assertRaises(EstimationError):
+                        estimate_fill(self.image)
+
 
 def _refuse_network(*args, **kwargs):
     raise AssertionError("network must not be hit on this path")
@@ -153,6 +169,29 @@ class ApiKeyAvailableTest(unittest.TestCase):
             self.assertFalse(api_key_available())
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": ""}):
             self.assertFalse(api_key_available())
+
+
+class UploadGuardTest(unittest.TestCase):
+    def test_allows_supported_extensions_case_insensitively(self) -> None:
+        for name in ("bin.jpg", "BIN.JPG", "photo.jpeg", "photo.PNG", "site.webp"):
+            self.assertIsNone(upload_rejection_reason(name, 1024), name)
+
+    def test_allowlist_is_exactly_the_documented_set(self) -> None:
+        self.assertEqual(set(ALLOWED_UPLOAD_EXTENSIONS), {".jpg", ".jpeg", ".png", ".webp"})
+
+    def test_rejects_unsupported_extension_without_raising(self) -> None:
+        reason = upload_rejection_reason("payload.gif", 1024)
+        self.assertIsInstance(reason, str)
+        self.assertIn(".gif", reason)
+
+    def test_rejects_missing_extension(self) -> None:
+        self.assertIsInstance(upload_rejection_reason("noextension", 1024), str)
+
+    def test_oversize_rejected_but_boundary_allowed(self) -> None:
+        self.assertIsNone(upload_rejection_reason("ok.jpg", MAX_UPLOAD_BYTES))
+        reason = upload_rejection_reason("big.jpg", MAX_UPLOAD_BYTES + 1)
+        self.assertIsInstance(reason, str)
+        self.assertIn("too large", reason)
 
 
 if __name__ == "__main__":

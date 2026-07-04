@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import pandas as pd
 
-AVERAGE_TRUCK_SPEED_KMH = 25
-FUEL_CONSUMPTION_LITERS_PER_KM = 0.35
-CO2_KG_PER_LITER_DIESEL = 2.68
-STOP_TIME_MINUTES_PER_BIN = 2
-FUEL_COST_KZT_PER_LITER = 295
+from src.config import (
+    AVERAGE_TRUCK_SPEED_KMH,
+    CO2_KG_PER_LITER_DIESEL,
+    FUEL_CONSUMPTION_LITERS_PER_KM,
+    FUEL_COST_KZT_PER_LITER,
+    STOP_TIME_MINUTES_PER_BIN,
+)
 
 
 def calculate_savings(

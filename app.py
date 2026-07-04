@@ -47,6 +47,7 @@ from src.photo_fill.estimator import (
     EstimationError,
     api_key_available,
     estimate_fill,
+    upload_rejection_reason,
 )
 from src.predict import assign_priority, predict_fill_levels
 from src.routing import compare_routes
@@ -603,9 +604,13 @@ def route_points_to_dataframe(route_points: list[dict]) -> pd.DataFrame:
 
 def estimate_uploaded_photo(upload) -> dict:
     """Run the live estimator on one uploaded photo; errors become table-safe dicts."""
-    suffix = Path(upload.name).suffix or ".jpg"
+    data = upload.getvalue()
+    rejection = upload_rejection_reason(upload.name, len(data))
+    if rejection is not None:
+        return {"photo": upload.name, "error": rejection}
+    suffix = Path(upload.name).suffix.lower()
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as handle:
-        handle.write(upload.getvalue())
+        handle.write(data)
         temp_path = Path(handle.name)
     try:
         result = estimate_fill(temp_path)

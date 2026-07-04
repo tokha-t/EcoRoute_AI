@@ -1,20 +1,29 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import joblib
 import numpy as np
 import pandas as pd
 
+from src.config import MAX_INTERVAL_DAYS
 from src.data_generator import DATA_DIR, ensure_data_exists
 from src.preprocessing import FEATURE_COLUMNS, prepare_features
 from src.train_model import MODEL_PATH, train_and_save_model
 
 SAMPLE_PREDICTIONS_PATH = DATA_DIR / "sample_predictions.csv"
 
-# Max-interval rule (P0, see SPEC_V1 6.4): a site overdue this many days is always
-# Critical + must-serve, regardless of predicted fill. Never remove or weaken.
-MAX_INTERVAL_DAYS = 3
+logger = logging.getLogger(__name__)
+
+# Max-interval rule (P0, see SPEC_V1 6.4): a site overdue MAX_INTERVAL_DAYS days is
+# always Critical + must-serve, regardless of predicted fill. The constant now lives
+# in src.config and is re-imported here so this rule and existing callers are
+# unchanged. Never remove or weaken.
+
+# A stale/corrupt/version-mismatched model pickle raises one of these on load; we
+# retrain once rather than crash. Kept narrow so a genuine bug still surfaces.
+_RETRAINABLE_LOAD_ERRORS = (OSError, EOFError, ValueError, AttributeError, ModuleNotFoundError)
 
 
 def assign_priority(df: pd.DataFrame, threshold: int | float) -> pd.DataFrame:
@@ -53,7 +62,13 @@ def _load_or_train_model():
         train_and_save_model()
     try:
         return joblib.load(MODEL_PATH)
-    except Exception:
+    except _RETRAINABLE_LOAD_ERRORS as exc:
+        logger.warning(
+            "Could not load model from %s (%s: %s); retraining once.",
+            MODEL_PATH,
+            type(exc).__name__,
+            exc,
+        )
         train_and_save_model()
         return joblib.load(MODEL_PATH)
 

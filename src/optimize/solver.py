@@ -24,11 +24,8 @@ from typing import Sequence
 import pandas as pd
 from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 
+from src.config import DENSITY_KG_PER_L
 from src.optimize.distances import DistanceMatrix, Point, get_matrix
-
-# Mixed residential waste runs ~0.10-0.15 kg/L uncompacted; 0.12 (=120 kg/m3)
-# is the middle of that band. Calibrate per district with weighbridge data (V2).
-DENSITY_KG_PER_L = 0.12
 
 MIN_TRUCKS = 1
 MAX_TRUCKS = 3

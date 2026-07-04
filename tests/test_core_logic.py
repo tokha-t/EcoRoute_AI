@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 
-from src.predict import MAX_INTERVAL_DAYS, assign_priority
+from src.predict import MAX_INTERVAL_DAYS, _load_or_train_model, assign_priority
 
 STYLES_PATH = Path(__file__).resolve().parents[1] / "assets" / "styles.css"
 
@@ -74,6 +75,29 @@ class StylesheetTest(unittest.TestCase):
 
         self.assertTrue(css.strip())
         self.assertNotIn("<style>", css)
+
+
+class LoadOrTrainModelTest(unittest.TestCase):
+    def test_retrains_once_with_warning_when_model_load_fails(self) -> None:
+        # A stale/corrupt pickle should be recovered by retraining exactly once,
+        # with a logged warning naming the cause — not a bare, silent except.
+        sentinel = object()
+        with (
+            patch("src.predict.Path") as fake_path,
+            patch("src.predict.train_and_save_model") as fake_train,
+            patch(
+                "src.predict.joblib.load",
+                side_effect=[ValueError("corrupt pickle"), sentinel],
+            ) as fake_load,
+        ):
+            fake_path.return_value.exists.return_value = True  # skip the initial train
+            with self.assertLogs("src.predict", level="WARNING") as logs:
+                model = _load_or_train_model()
+
+        self.assertIs(model, sentinel)
+        self.assertEqual(fake_train.call_count, 1)  # retrained at most once
+        self.assertEqual(fake_load.call_count, 2)
+        self.assertTrue(any("corrupt pickle" in line for line in logs.output))
 
 
 if __name__ == "__main__":

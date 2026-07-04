@@ -198,6 +198,41 @@ docs/demo_script.md timings.
 
 ---
 
+## M6 — Independent-review follow-ups (half-day session)
+
+```text
+Context: an external engineering review flagged a short list of hardening items.
+Read docs/SPEC_V1.md section 6.2 for the photo contract. Do exactly these, nothing else:
+
+1. Upload guards in the photo path (app.py estimate_uploaded_photo + src/photo_fill/estimator.py):
+   - Extension allowlist: .jpg .jpeg .png .webp (case-insensitive); anything else
+     returns a table-safe error row, never raises.
+   - File size cap: MAX_UPLOAD_BYTES = 12 * 1024 * 1024, checked before writing temp file.
+   - Set PIL Image.MAX_IMAGE_PIXELS to 40_000_000 in estimator module (decompression-bomb guard)
+     and catch Image.DecompressionBombError into the same error-row path.
+2. src/optimize/distances.py: get_matrix with <2 points must return source="trivial"
+   (not "osrm"), fallback_used=False. Update any code/tests that compare source values;
+   the UI badge must treat only source=="osrm" as road distances.
+3. src/predict.py _load_or_train_model: replace bare `except Exception` with
+   (OSError, EOFError, ValueError, AttributeError, ModuleNotFoundError) and log a
+   warning with the exception before retraining. Retrain at most once.
+4. New src/config.py: move these module constants there and re-import everywhere:
+   FUEL_COST_KZT_PER_LITER, FUEL_CONSUMPTION_LITERS_PER_KM, CO2_KG_PER_LITER_DIESEL,
+   AVERAGE_TRUCK_SPEED_KMH, STOP_TIME_MINUTES_PER_BIN, DENSITY_KG_PER_L,
+   VLM model name, CONFIDENCE_THRESHOLD, MAX_INTERVAL_DAYS, DETOUR_FACTOR.
+   Pure move — zero behavior change, all existing imports keep working
+   (re-export from original modules is fine).
+5. Tests for 1-3 (oversize file, bad extension, bomb-guard path, trivial matrix
+   label, retrain-once logging). Run the full suite.
+
+Do NOT: refactor app.py into src/ui/, remove routing.py, add auth, touch the
+solver, or change any UI copy.
+
+Verify: python -m pytest tests/ -q green; ruff check . clean.
+```
+
+---
+
 ## Extras (only when needed)
 
 - **P1 landfill dumps** (after M2 works): "Add optional landfill refill node to solver.py: trucks may visit LANDFILL coords mid-route to reset load when capacity would otherwise be violated. Test: demand 2× capacity, 1 truck → solution contains exactly one dump visit."
