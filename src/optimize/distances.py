@@ -24,7 +24,8 @@ DEFAULT_MODE = "driving"
 OSRM_TIMEOUT_SECONDS = 5.0
 DETOUR_FACTOR = 1.4  # straight-line -> road-distance estimate (spec 6.3)
 FALLBACK_SPEED_KMH = 25.0  # mirrors savings.AVERAGE_TRUCK_SPEED_KMH
-CACHE_DIR = Path("data/cache")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+CACHE_DIR = PROJECT_ROOT / "data" / "cache"
 EARTH_RADIUS_M = 6_371_000.0
 COORDINATE_PRECISION = 6  # ~0.1 m; keeps cache keys and point lookups stable
 
