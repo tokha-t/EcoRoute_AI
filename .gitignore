@@ -16,6 +16,12 @@ data/cache/*
 data/cache/osm/*
 !data/cache/osm/baikonur_boundary.geojson
 !data/cache/osm/overpass_efc94045afd61e19c304.json.gz
+!data/cache/osm/landfill.geojson
+!data/road_cache/
+!data/road_cache/meta.json
+!data/road_cache/nodes.csv
+!data/road_cache/matrix.npz
+!data/road_cache/geometry.jsonl.gz
 .claude/settings.local.json
 outputs/
 data/photos/*

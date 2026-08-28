@@ -178,6 +178,14 @@ def _naive_plan(
         distance = sum(local.meters[a][b] for a, b in zip(path[:-1], path[1:]))
         duration = sum(local.seconds[a][b] for a, b in zip(path[:-1], path[1:]))
         duration += len(served_nodes) * params.service_time_s + dumps * params.landfill_service_s
+        cumulative_load = [0.0]
+        running_load = 0.0
+        for node in path[1:]:
+            if node == landfill_node or node == 0:
+                running_load = 0.0
+            else:
+                running_load += loads[node - 1]
+            cumulative_load.append(running_load)
         routes.append(
             Route(
                 truck_id=truck.truck_id,
@@ -194,6 +202,23 @@ def _naive_plan(
                 cumulative_distance_m=list(
                     np.cumsum([0.0] + [local.meters[a][b] for a, b in zip(path[:-1], path[1:])])
                 ),
+                cumulative_duration_s=list(
+                    np.cumsum(
+                        [0.0]
+                        + [
+                            local.seconds[a][b]
+                            + (
+                                params.landfill_service_s
+                                if a == landfill_node
+                                else params.service_time_s
+                                if a > 0
+                                else 0.0
+                            )
+                            for a, b in zip(path[:-1], path[1:])
+                        ]
+                    )
+                ),
+                cumulative_load_kg=cumulative_load,
                 end_load_kg=current_load,
             )
         )

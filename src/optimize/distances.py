@@ -1,16 +1,16 @@
 """Travel-time and road-distance matrices for route planning.
 
-Primary source is a local OSRM server's /table API (setup: docs/osrm-setup.md).
-When OSRM is unreachable, distances fall back to haversine scaled by a detour
-factor, and the result is flagged so the UI can label it honestly (see the
-honesty invariant in CLAUDE.md).
+Primary source is the committed road artifact in ``data/road_cache``. A local
+OSRM server (setup: docs/osrm-setup.md) is the development fallback. If neither
+has an answer, matrices use a labelled haversine estimate and geometry returns
+per-segment straight fallbacks so the UI can render them dashed and warn.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import asin, cos, radians, sin, sqrt
 from pathlib import Path
 from typing import Sequence
@@ -18,6 +18,7 @@ from typing import Sequence
 import requests
 
 from src.config import DETOUR_FACTOR
+from src.optimize.road_cache import ROAD_CACHE_DIR, load_road_cache
 
 Point = tuple[float, float]  # (latitude, longitude)
 
@@ -40,13 +41,27 @@ class DistanceMatrix:
     seconds: list[list[float]]
     meters: list[list[float]]
     fallback_used: bool
-    source: str  # "osrm" | "haversine" | "trivial"
+    source: str  # "road_cache" | "osrm" | "haversine" | "trivial"
 
 
 @dataclass(frozen=True)
 class RouteGeometry:
     points: list[Point]
-    source: str  # "osrm" | "straight"
+    source: str  # "road_cache" | "osrm" | "straight" | "mixed"
+    segments: list["RouteSegment"] = field(default_factory=list)
+
+    @property
+    def segment_sources(self) -> list[str]:
+        return [segment.source for segment in self.segments]
+
+
+@dataclass(frozen=True)
+class RouteSegment:
+    start: Point
+    end: Point
+    points: list[Point]
+    source: str  # "road_cache" | "osrm" | "straight"
+    distance_m: float
 
 
 def haversine_meters(a: Point, b: Point) -> float:
@@ -171,6 +186,7 @@ def get_matrix(
     *,
     base_url: str = OSRM_BASE_URL,
     cache_dir: Path = CACHE_DIR,
+    road_cache_dir: Path | None = ROAD_CACHE_DIR,
     timeout: float = OSRM_TIMEOUT_SECONDS,
 ) -> DistanceMatrix:
     """Return travel seconds and road meters between all point pairs.
@@ -184,6 +200,17 @@ def get_matrix(
         return DistanceMatrix(
             seconds=zeros, meters=[row[:] for row in zeros], fallback_used=False, source="trivial"
         )
+
+    road_cache = load_road_cache(road_cache_dir) if road_cache_dir is not None else None
+    if road_cache is not None:
+        cached = road_cache.matrix_for(rounded)
+        if cached is not None:
+            return DistanceMatrix(
+                seconds=cached[0],
+                meters=cached[1],
+                fallback_used=False,
+                source="road_cache",
+            )
 
     cache_file = _cache_path(cache_dir, rounded, mode)
     cached = _read_cache(cache_file, len(rounded))
@@ -205,28 +232,59 @@ def get_route_geometry(
     mode: str = DEFAULT_MODE,
     *,
     base_url: str = OSRM_BASE_URL,
+    road_cache_dir: Path | None = ROAD_CACHE_DIR,
     timeout: float = 0.75,
 ) -> RouteGeometry:
-    """Follow OSRM roads for an ordered route, or return honest straight segments."""
+    """Resolve every route edge via cache, live OSRM, then an explicit straight fallback."""
     rounded = _rounded_points(points)
     if len(rounded) < 2:
-        return RouteGeometry(rounded, "straight")
-    coords = ";".join(f"{lon:.6f},{lat:.6f}" for lat, lon in rounded)
-    try:
-        response = requests.get(
-            f"{base_url}/route/v1/{mode}/{coords}",
-            params={"overview": "full", "geometries": "geojson", "steps": "false"},
-            timeout=timeout,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        raw = payload["routes"][0]["geometry"]["coordinates"]
-        geometry = [(float(lonlat[1]), float(lonlat[0])) for lonlat in raw]
-        if len(geometry) < 2:
-            raise ValueError("empty route geometry")
-        return RouteGeometry(geometry, "osrm")
-    except (requests.RequestException, ValueError, KeyError, IndexError, TypeError):
-        return RouteGeometry(rounded, "straight")
+        return RouteGeometry(rounded, "straight", [])
+    road_cache = load_road_cache(road_cache_dir) if road_cache_dir is not None else None
+    segments: list[RouteSegment] = []
+    for start, end in zip(rounded[:-1], rounded[1:]):
+        cached_points = road_cache.geometry_for(start, end) if road_cache is not None else None
+        if cached_points:
+            segments.append(
+                RouteSegment(
+                    start,
+                    end,
+                    cached_points,
+                    "road_cache",
+                    float(road_cache.distance_for(start, end) or 0.0),
+                )
+            )
+            continue
+        coords = f"{start[1]:.6f},{start[0]:.6f};{end[1]:.6f},{end[0]:.6f}"
+        try:
+            response = requests.get(
+                f"{base_url}/route/v1/{mode}/{coords}",
+                params={"overview": "full", "geometries": "geojson", "steps": "false"},
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            raw = payload["routes"][0]["geometry"]["coordinates"]
+            segment_points = [(float(lonlat[1]), float(lonlat[0])) for lonlat in raw]
+            distance_m = float(payload["routes"][0].get("distance", 0.0))
+            if len(segment_points) < 2:
+                raise ValueError("empty route geometry")
+            segments.append(RouteSegment(start, end, segment_points, "osrm", distance_m))
+        except (requests.RequestException, ValueError, KeyError, IndexError, TypeError):
+            segments.append(
+                RouteSegment(
+                    start,
+                    end,
+                    [start, end],
+                    "straight",
+                    _fallback_pair(start, end)[1],
+                )
+            )
+    joined: list[Point] = []
+    for segment in segments:
+        joined.extend(segment.points if not joined else segment.points[1:])
+    sources = {segment.source for segment in segments}
+    source = next(iter(sources)) if len(sources) == 1 else "mixed"
+    return RouteGeometry(joined, source, segments)
 
 
 def _route_coords(route_points: Sequence[dict]) -> list[Point]:

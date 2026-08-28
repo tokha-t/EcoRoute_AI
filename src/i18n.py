@@ -33,6 +33,14 @@ TRANSLATIONS = {
     "duration": {"ru": "длительность", "en": "duration"},
     "dumps": {"ru": "рейсов на полигон", "en": "landfill dumps"},
     "route_source_osrm": {"ru": "маршрут по дорогам OSRM", "en": "OSRM road geometry"},
+    "route_source_cache": {
+        "ru": "офлайн-геометрия по дорожному кэшу",
+        "en": "offline road-cache geometry",
+    },
+    "route_source_mixed": {
+        "ru": "смешанные источники геометрии",
+        "en": "mixed geometry sources",
+    },
     "route_source_straight": {
         "ru": "прямые линии — OSRM недоступен",
         "en": "straight lines — OSRM unavailable",

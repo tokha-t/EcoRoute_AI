@@ -42,7 +42,9 @@ def build_hover_text(row) -> str:
 
 def _add_bin_markers(fig: go.Figure, all_bins_df: pd.DataFrame) -> None:
     for priority in ["Skip", "Medium", "High", "Critical"]:
-        priority_df = all_bins_df[all_bins_df["priority"] == priority] if not all_bins_df.empty else all_bins_df
+        priority_df = (
+            all_bins_df[all_bins_df["priority"] == priority] if not all_bins_df.empty else all_bins_df
+        )
         if priority_df.empty:
             continue
 
@@ -209,7 +211,10 @@ def create_simulation_map(
     depot: Point,
     landfill: Point,
     lang: str = "ru",
-) -> tuple[go.Figure, str]:
+    *,
+    selected_truck_id: str | None = None,
+    depot_assumed: bool = True,
+) -> tuple[go.Figure, str, int]:
     """V2 class map with road-following truck overlays and an offline fallback."""
     fig = go.Figure()
     class_colors = {"GREEN": "#16a34a", "YELLOW": "#eab308", "RED": "#dc2626"}
@@ -217,9 +222,7 @@ def create_simulation_map(
         sites = world_df[world_df["klass"] == klass]
         if sites.empty:
             continue
-        sizes = 7 + 13 * (
-            sites["capacity_liters"].astype(float) / world_df["capacity_liters"].max()
-        ) ** 0.5
+        sizes = 7 + 13 * (sites["capacity_liters"].astype(float) / world_df["capacity_liters"].max()) ** 0.5
         labels = (
             ("Заполнение", "ПЕРЕПОЛНЕНИЕ", "Темп", "Дней после вывоза", "Класс", "Причина")
             if lang == "ru"
@@ -259,8 +262,11 @@ def create_simulation_map(
         )
 
     by_id = world_df.set_index("site_id")
-    geometry_sources: set[str] = set()
-    for index, route in enumerate(plan.routes):
+    geometry_sources: list[str] = []
+    routes = [
+        route for route in plan.routes if selected_truck_id is None or route.truck_id == selected_truck_id
+    ]
+    for index, route in enumerate(routes):
         ordered_points: list[Point] = [depot]
         for stop in route.ordered_stops:
             if stop == "LANDFILL":
@@ -270,20 +276,64 @@ def create_simulation_map(
                 ordered_points.append((float(row["lat"]), float(row["lon"])))
         ordered_points.append(depot)
         geometry = get_route_geometry(ordered_points)
-        geometry_sources.add(geometry.source)
-        fig.add_trace(
-            go.Scattermap(
-                lat=[point[0] for point in geometry.points],
-                lon=[point[1] for point in geometry.points],
-                mode="lines",
-                line={"width": 5, "color": TRUCK_ROUTE_COLORS[index % len(TRUCK_ROUTE_COLORS)]},
-                name=route.truck_id,
-                hoverinfo="name",
+        color = TRUCK_ROUTE_COLORS[index % len(TRUCK_ROUTE_COLORS)]
+        for segment_index, segment in enumerate(geometry.segments):
+            geometry_sources.append(segment.source)
+            is_final = segment_index == len(geometry.segments) - 1
+            is_to_landfill = segment_index == len(geometry.segments) - 2
+            if is_final:
+                label = (
+                    f"{route.truck_id} · полигон → парк · {segment.distance_m / 1000:.1f} км"
+                    if lang == "ru"
+                    else f"{route.truck_id} · landfill → depot · {segment.distance_m / 1000:.1f} km"
+                )
+            elif is_to_landfill:
+                label = (
+                    f"{route.truck_id} · → полигон · {segment.distance_m / 1000:.1f} км"
+                    if lang == "ru"
+                    else f"{route.truck_id} · → landfill · {segment.distance_m / 1000:.1f} km"
+                )
+            else:
+                label = route.truck_id
+            if segment.source == "straight":
+                latitudes: list[float | None] = []
+                longitudes: list[float | None] = []
+                pieces = 24
+                for piece in range(0, pieces, 2):
+                    for fraction in (piece / pieces, (piece + 1) / pieces):
+                        latitudes.append(segment.start[0] + (segment.end[0] - segment.start[0]) * fraction)
+                        longitudes.append(segment.start[1] + (segment.end[1] - segment.start[1]) * fraction)
+                    latitudes.append(None)
+                    longitudes.append(None)
+            else:
+                latitudes = [point[0] for point in segment.points]
+                longitudes = [point[1] for point in segment.points]
+            fig.add_trace(
+                go.Scattermap(
+                    lat=latitudes,
+                    lon=longitudes,
+                    mode="lines",
+                    line={"width": 5, "color": color},
+                    name=label,
+                    hoverinfo="name",
+                    showlegend=is_final or is_to_landfill or segment_index == 0,
+                )
             )
-        )
 
     infrastructure = (
-        (depot, "#2563eb", "Депо" if lang == "ru" else "Depot"),
+        (
+            depot,
+            "#2563eb",
+            (
+                "Парк (предположительно)"
+                if lang == "ru" and depot_assumed
+                else "Depot (assumed)"
+                if depot_assumed
+                else "Парк"
+                if lang == "ru"
+                else "Depot"
+            ),
+        ),
         (landfill, "#7c2d12", "Полигон" if lang == "ru" else "Landfill"),
     )
     for point, color, label in infrastructure:
@@ -308,5 +358,6 @@ def create_simulation_map(
         margin={"r": 0, "t": 0, "l": 0, "b": 0},
         legend={"orientation": "h", "y": 1.02, "x": 0},
     )
-    source = "osrm" if geometry_sources == {"osrm"} else "straight"
-    return fig, source
+    source_set = set(geometry_sources)
+    source = next(iter(source_set)) if len(source_set) == 1 else "mixed" if source_set else "straight"
+    return fig, source, geometry_sources.count("straight")

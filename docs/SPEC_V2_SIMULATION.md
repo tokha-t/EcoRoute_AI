@@ -311,6 +311,129 @@ bins overflow is a failure, and the report must make that visible.
 - [ ] Map renders locally and on Streamlit Cloud with no OSRM available (fallback path).
 - [ ] `python -m pytest tests/ -q` green; `ruff check .` clean.
 
+## 8bis. V2.1 — Road realism and a usable simulation (added 2026-08-28)
+
+### 8bis.1 Root cause of "it just connects dots"
+
+The code is not wrong; the infrastructure is missing. `get_route_geometry()` and `get_matrix()` both
+call OSRM at `http://localhost:5000`. **That host does not exist on Streamlit Cloud.** Every request
+fails, both silently degrade to their fallbacks, and the deployed app therefore shows straight lines
+between points and haversine×1.4 distances. Locally with Docker running it looks fine, which is why
+this was not caught.
+
+Consequences that must be treated as defects, not cosmetics:
+- Routes drawn as straight lines are not routes. A dispatcher sees a truck cutting through buildings.
+- Distances are wrong, so every KPI in every report is wrong.
+- The depot→…→landfill→depot return leg *is* computed and drawn (verified in `map_utils.py:264-271`),
+  but as a straight line to a depot placed outside the district it reads as a stray line, not a return.
+
+Running a hosted OSRM server is rejected: cost, ops burden, and one more thing to fail during a live
+demo on venue wifi. The fix is to make road data a **build-time artifact**.
+
+### 8bis.2 Precomputed road cache (required)
+
+Because the simulated world is a fixed set of nodes, the entire road network relevant to it can be
+computed once locally and committed.
+
+**Build script** `scripts/build_road_cache.py`, run on a machine with OSRM up:
+
+```
+python scripts/build_road_cache.py --world data/world.csv --osrm http://localhost:5000 --k 25
+```
+
+**Artifact** in `data/road_cache/`:
+
+| File | Content |
+|---|---|
+| `meta.json` | `world_hash`, `built_at`, `node_count`, `k`, `osrm_profile`, `coverage_pct` |
+| `nodes.csv` | `node_id`, `kind` (`site`\|`depot`\|`landfill`), `lat`, `lon` |
+| `matrix.npz` | Two float32 N×N arrays: `meters`, `seconds`. N = sites + depot + landfill |
+| `geometry.jsonl.gz` | One record per edge: `{"a": i, "b": j, "poly": "<polyline5>"}` |
+
+- The **full** N×N matrix is stored (N≈252 → ~500 KB). No approximation in distances, ever.
+- Geometry is stored for the **k nearest neighbours** of every node (default k=25) **plus every
+  depot↔node and landfill↔node edge**, because those legs always occur. Expected size ~1–3 MB gzipped.
+- Encode polylines with a precision-5 encoder implemented in `src/geo/polyline.py` (~40 lines,
+  no new dependency).
+- Hard size guard: the build fails if the artifact exceeds 25 MB.
+- `meta.json.world_hash` must match the generated world; a mismatch is reported loudly at startup.
+
+**Runtime lookup order** in `src/optimize/distances.py`:
+
+1. Road cache (loaded once via `st.cache_resource`) — for both matrix and geometry.
+2. Live OSRM, if reachable (local development).
+3. Straight line — **only** as a labelled last resort.
+
+**Honesty requirement.** The current subtle badge is insufficient. When any drawn route contains a
+straight-line segment, the map must render those segments **dashed** and display a prominent warning:
+`"Часть участков показана прямыми линиями — нет дорожных данных"`, plus the affected edge count.
+A route that looks road-accurate but is not is worse than an obviously incomplete one.
+
+### 8bis.3 Depot and landfill must be real places
+
+`DEPOT_COORDS` and `LANDFILL_COORDS` are currently invented and sit outside the district, which is
+why routes shoot off the map. Replace with:
+
+- Query OSM for `landuse=landfill` / `amenity=waste_transfer_station` near Astana and use the real
+  polygon centroid; cache it like the boundary.
+- Depot: the operator's yard. Unknown until the pilot meeting — so make it a **UI-settable point**
+  (click on map or enter coordinates), defaulting to a documented plausible location that is clearly
+  labelled `предположительно` in the UI until confirmed.
+- Both must be visible on the map with distinct icons, and the route legend must list the final
+  `→ полигон → парк` leg with its own distance.
+- If either lies outside the road cache, the build must include it — never fall back for these.
+
+### 8bis.4 The day control must be instant (current implementation is the "bug")
+
+`app.py:917-950` re-solves the CVRP for **every day from 0 to the requested day on every rerun** —
+reaching day 30 triggers 31 solves, and dragging the slider backwards replays from day 0. With a
+5-second solver limit that is minutes of frozen UI. There is no bug to find; the design is wrong.
+
+Required design:
+
+- `src/sim/trajectory.py`: `build_trajectory(world, params, days=30, seed) -> list[DaySnapshot]`
+  where `DaySnapshot = (day, state_df, classified_df, plan)`. The simulation is deterministic given
+  `(world_hash, params_hash, seed)`, so it is computed **once**.
+- Cache in memory with `@st.cache_data` keyed on that triple, **and** persist to
+  `data/cache/trajectory_<hash>.pkl` so a restart or redeploy does not recompute.
+- Show a progress bar during the one-time build ("День 7 из 30…"), not a frozen spinner.
+- The day slider and the "Следующий день" button then perform **pure lookup** into the list.
+  Navigation forwards and backwards must be instantaneous.
+- Fix the widget-key conflict properly: the button must use an `on_click` callback that mutates
+  `st.session_state["v2_day"]`; callbacks run before the rerun, so a slider keyed on the same value
+  is safe. Do not assign to a widget-keyed session value inline during a run.
+- Changing a policy parameter invalidates the trajectory and rebuilds it once, with the progress bar.
+
+### 8bis.5 Minimum for a dispatcher to call it usable
+
+The simulation is not the product; the daily plan is. Each day view must offer:
+
+1. **Per-truck selector** — show one truck's route alone, or all.
+2. **Ordered stop list** for the selected truck: №, address, class, fill %, estimated arrival time,
+   cumulative load, and the landfill/depot legs as explicit rows.
+3. **Route sheet export** (маршрутный лист) for that day: printable HTML + CSV, in Russian, with
+   date, truck, driver signature line — reusing the M7b module if present, otherwise built here.
+4. **Skipped-yellow explanations** visible on demand: which bins were skipped and why
+   ("детур 1.8 км ради 0.4 м³").
+5. **Manual override**: force-include or force-exclude a site, then re-solve *that day only*.
+   Overrides persist for the session and are shown in the route sheet, because a dispatcher who
+   cannot overrule the machine will stop using it.
+
+### 8bis.6 Acceptance criteria for V2.1
+
+- [ ] With OSRM stopped and the road cache present, every route on the map follows streets; zero
+      straight segments for cached edges.
+- [ ] `meta.json.coverage_pct` ≥ 95% of edges used across a 30-day run; uncovered edges render
+      dashed and are counted in the warning.
+- [ ] Deleting `data/road_cache/` makes the app state loudly that distances and geometry are
+      estimates — it must never look road-accurate without the data.
+- [ ] Every route ends `… → полигон → парк`, and the landfill and depot legs appear in the stop list
+      with their own distances.
+- [ ] Day 0 → 30 navigation, forwards and backwards, responds in under 200 ms after the initial
+      trajectory build; the build itself shows a progress bar.
+- [ ] Route sheet for any day/truck exports and prints with all stops in order.
+- [ ] All KPI reports regenerated with cache-backed road distances; the previous numbers are void.
+
 ## 9. Non-goals
 
 - No real operator data, no data ingestion pipeline (that is the pilot).

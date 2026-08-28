@@ -3,7 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 from src.optimize.distances import DistanceMatrix
-from src.optimize.solver import SolverParams, Truck, plan_routes
+from src.optimize.solver import Plan, SolverParams, Truck, plan_routes
 from src.reports.route_sheet import build_route_sheet
 
 
@@ -46,6 +46,29 @@ def test_route_sheet_preserves_order_and_final_landfill() -> None:
     planned = sheet.rows[sheet.rows["status"] == "в маршруте"]
     assert list(planned["stop_type"]) == ["DEPOT", "SITE", "LANDFILL", "DEPOT"]
     assert list(planned["site_id"])[1] == "RED-1"
+    assert list(planned["sequence"]) == [0, 1, 2, 3]
+    assert planned["eta"].str.match(r"\d\d:\d\d").all()
+    assert list(planned["leg_km"]) == [0.0, 0.1, 0.1, 0.2]
+    assert list(planned["cumulative_load_kg"]) == [0.0, 120.0, 0.0, 0.0]
     assert plan.routes[0].ordered_stops[-1] == "LANDFILL"
     assert "RED-1" in sheet.html
     assert "Водитель" in sheet.html
+
+
+def test_route_sheet_marks_manual_exclusion() -> None:
+    sites = pd.DataFrame(
+        [
+            {
+                "site_id": "S1",
+                "address": "Адрес",
+                "containers": 1,
+                "fill_pct": 50,
+                "klass": "YELLOW",
+            }
+        ]
+    )
+    plan = Plan([], [], [], 0, 0, "road_cache", False, manual_overrides={"S1": "exclude"})
+    sheet = build_route_sheet(plan, sites)
+    assert sheet.rows.loc[0, "status"] == "исключён диспетчером"
+    assert sheet.rows.loc[0, "manual_override"] == "exclude"
+    assert "S1" in sheet.html

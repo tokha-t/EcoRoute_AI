@@ -89,6 +89,8 @@ class Route:
     ordered_stops: list[str] = field(default_factory=list)
     max_segment_load_kg: float = 0.0
     cumulative_distance_m: list[float] = field(default_factory=list)
+    cumulative_duration_s: list[float] = field(default_factory=list)
+    cumulative_load_kg: list[float] = field(default_factory=list)
     end_load_kg: float = 0.0
 
 
@@ -116,6 +118,7 @@ class Plan:
     unserved_red: list[str] = field(default_factory=list)
     reference_cost_m_per_m3: float = 0.0
     mode: str = "legacy"
+    manual_overrides: dict[str, str] = field(default_factory=dict)
 
 
 def estimate_load_kg(sites_df: pd.DataFrame) -> pd.Series:
@@ -645,8 +648,26 @@ def _extract_v2_solution(
             path, loads, matrix, truck, params, landfill_node
         )
         cumulative = [0.0]
+        cumulative_duration = [0.0]
+        cumulative_load = [0.0]
+        running_load = 0.0
         for before, after in zip(path[:-1], path[1:]):
             cumulative.append(cumulative[-1] + matrix.meters[before][after])
+            service = (
+                _truck_service(truck, params)
+                if 1 <= before <= n_sites
+                else params.landfill_service_s
+                if before == landfill_node
+                else 0.0
+            )
+            cumulative_duration.append(
+                cumulative_duration[-1] + service + matrix.seconds[before][after]
+            )
+            if 1 <= after <= n_sites:
+                running_load += loads[after - 1]
+            elif after == landfill_node:
+                running_load = 0.0
+            cumulative_load.append(running_load)
         end_load = float(solution.Value(load_dimension.CumulVar(routing.End(vehicle))))
         paths.append(path)
         routes.append(
@@ -663,6 +684,8 @@ def _extract_v2_solution(
                 ],
                 max_segment_load_kg=max_segment,
                 cumulative_distance_m=cumulative,
+                cumulative_duration_s=cumulative_duration,
+                cumulative_load_kg=cumulative_load,
                 end_load_kg=end_load,
             )
         )

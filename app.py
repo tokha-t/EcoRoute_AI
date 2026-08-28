@@ -5,7 +5,6 @@ import tempfile
 from pathlib import Path
 
 import joblib
-import numpy as np
 import pandas as pd
 import plotly.express as px
 import requests
@@ -25,6 +24,7 @@ from src.app_logic import (
 )
 from src.config import (
     DEPOT_COORDS,
+    DEPOT_COORDS_ASSUMED,
     LANDFILL_COORDS,
     MAX_INTERVAL_DAYS,
     PLANNING_HORIZON_DAYS,
@@ -41,6 +41,7 @@ from src.data_generator import (
 from src.i18n import t
 from src.map_utils import create_fleet_route_map, create_route_map, create_simulation_map
 from src.optimize.distances import apply_road_distances
+from src.optimize.road_cache import RoadCacheError, load_road_cache
 from src.optimize.solver import (
     DEFAULT_TRUCK_CAPACITY_KG,
     MAX_TRUCKS,
@@ -62,7 +63,7 @@ from src.predict import assign_priority, predict_fill_levels
 from src.reports.route_sheet import build_route_sheet
 from src.routing import compare_routes
 from src.savings import calculate_savings
-from src.sim.fill import ClassificationParams, advance_day, classify, empty_sites
+from src.sim.fill import ClassificationParams
 from src.sim.run import (
     DEFAULT_REPORT_CSV,
     DEFAULT_REPORT_MD,
@@ -70,6 +71,13 @@ from src.sim.run import (
     run_full_analysis,
     summarize,
     write_comparison_report,
+)
+from src.sim.trajectory import (
+    DaySnapshot,
+    TrajectoryParams,
+    build_trajectory,
+    get_snapshot,
+    solve_day,
 )
 from src.sim.world import generate_world
 from src.train_model import METRICS_PATH, MODEL_PATH, train_and_save_model
@@ -837,37 +845,51 @@ def load_v2_world() -> pd.DataFrame:
     return generate_world(seed=42, n_sites=250)
 
 
-def solve_v2_day(
+@st.cache_resource(show_spinner=False)
+def load_v2_road_cache():
+    return load_road_cache()
+
+
+@st.cache_data(show_spinner=False)
+def load_v2_trajectory(
     world: pd.DataFrame,
-    day: int,
-    classification_params: ClassificationParams,
-    trucks: list[Truck],
-    shift_hours: float,
-    yellow_tolerance: float,
-    reds_only: bool,
-) -> tuple[pd.DataFrame, Plan]:
-    classified = classify(world, day, classification_params)
-    candidates = classified[classified["klass"].isin(["RED", "YELLOW"])].copy()
-    if candidates.empty:
-        return classified, Plan(
-            routes=[],
-            violations=[],
-            dropped_site_ids=[],
-            total_distance_m=0.0,
-            total_duration_s=0.0,
-            distance_source="none",
-            fallback_used=False,
-            mode="reds_only" if reds_only else "predictive",
-        )
-    params = SolverParams(
-        depot=DEPOT_COORDS,
-        landfill=LANDFILL_COORDS,
-        shift_duration_s=shift_hours * 3600,
-        yellow_tolerance=yellow_tolerance,
-        reds_only=reds_only,
-        time_limit_s=1.0,
+    params: TrajectoryParams,
+    lang: str,
+) -> list[DaySnapshot]:
+    progress_bar = st.progress(
+        0.0,
+        text="Подготовка траектории…" if lang == "ru" else "Preparing trajectory…",
     )
-    return classified, plan_routes(candidates, trucks, params)
+
+    def report_progress(day: int, days: int) -> None:
+        progress_bar.progress(
+            min(1.0, (day + 1) / (days + 1)),
+            text=(f"День {day} из {days}…" if lang == "ru" else f"Day {day} of {days}…"),
+        )
+
+    snapshots = build_trajectory(
+        world,
+        params,
+        days=30,
+        seed=42,
+        progress=report_progress,
+    )
+    progress_bar.empty()
+    return snapshots
+
+
+@st.cache_data(show_spinner=False)
+def solve_v2_override(
+    state: pd.DataFrame,
+    day: int,
+    params: TrajectoryParams,
+    overrides: tuple[tuple[str, str], ...],
+) -> tuple[pd.DataFrame, Plan]:
+    return solve_day(state, day, params, overrides=dict(overrides))
+
+
+def increment_v2_day() -> None:
+    st.session_state["v2_day"] = min(30, int(st.session_state.get("v2_day", 0)) + 1)
 
 
 def render_v2_simulation(
@@ -878,6 +900,7 @@ def render_v2_simulation(
     n_trucks: int,
     truck_capacity_kg: float,
     shift_hours: float,
+    depot: tuple[float, float],
 ) -> None:
     initial_world = load_v2_world()
     trucks = [
@@ -889,67 +912,65 @@ def render_v2_simulation(
         for index in range(n_trucks)
     ]
     reds_only = policy_name == "reds_only"
-    signature = (
-        policy_name,
-        classification_params,
-        yellow_tolerance,
-        n_trucks,
-        truck_capacity_kg,
-        shift_hours,
+    trajectory_params = TrajectoryParams(
+        trucks=tuple(trucks),
+        classification=classification_params,
+        depot=depot,
+        landfill=LANDFILL_COORDS,
+        shift_duration_s=shift_hours * 3600,
+        yellow_tolerance=yellow_tolerance,
+        reds_only=reds_only,
     )
-    state_key = "v2_sim_state"
-    state_day_key = "v2_sim_state_day"
-    signature_key = "v2_sim_signature"
-    requested_key = "v2_requested_day"
-    if requested_key not in st.session_state:
-        st.session_state[requested_key] = 0
-    if st.session_state.get(signature_key) != signature:
-        st.session_state[state_key] = initial_world.copy()
-        st.session_state[state_day_key] = 0
-        st.session_state[signature_key] = signature
 
     st.title(t("title", lang))
     st.caption(t("subtitle", lang))
     st.markdown(f'<div class="sim-banner">{t("banner", lang)}</div>', unsafe_allow_html=True)
 
+    try:
+        road_cache = load_v2_road_cache()
+        if road_cache is None:
+            raise RoadCacheError("data/road_cache is missing")
+        road_cache.validate_world(initial_world, depot, LANDFILL_COORDS)
+    except RoadCacheError as exc:
+        st.error(
+            ("Дорожный кэш недоступен: " if lang == "ru" else "Road cache unavailable: ")
+            + str(exc)
+            + (
+                ". Без него расстояния и геометрия были бы оценочными, поэтому план отключён; "
+                "прямые линии для парка и полигона запрещены."
+                if lang == "ru"
+                else ". Without it, distances and geometry would be estimates, so planning is "
+                "disabled; straight-line routing for the depot and landfill is forbidden."
+            )
+        )
+        st.stop()
+
+    trajectory = load_v2_trajectory(initial_world, trajectory_params, lang)
+
+    if "v2_day" not in st.session_state:
+        st.session_state["v2_day"] = 0
     day_col, next_col = st.columns([4, 1])
     with next_col:
-        next_clicked = st.button(t("next_day", lang), disabled=st.session_state[requested_key] >= 30)
-    if next_clicked:
-        st.session_state[requested_key] = min(30, int(st.session_state[requested_key]) + 1)
-    with day_col:
-        requested_day = st.slider(t("day", lang), 0, 30, key=requested_key)
-
-    current_day = int(st.session_state.get(state_day_key, 0))
-    state = st.session_state.get(state_key, initial_world.copy()).copy()
-    if requested_day < current_day:
-        state = initial_world.copy()
-        current_day = 0
-    classified, plan = solve_v2_day(
-        state,
-        current_day,
-        classification_params,
-        trucks,
-        shift_hours,
-        yellow_tolerance,
-        reds_only,
-    )
-    while current_day < requested_day:
-        served_ids = [site_id for route in plan.routes for site_id in route.site_ids]
-        state = empty_sites(state, served_ids, current_day)
-        current_day += 1
-        state = advance_day(state, current_day, np.random.default_rng(42 + current_day))
-        classified, plan = solve_v2_day(
-            state,
-            current_day,
-            classification_params,
-            trucks,
-            shift_hours,
-            yellow_tolerance,
-            reds_only,
+        st.button(
+            t("next_day", lang),
+            disabled=int(st.session_state["v2_day"]) >= 30,
+            on_click=increment_v2_day,
         )
-    st.session_state[state_key] = state
-    st.session_state[state_day_key] = current_day
+    with day_col:
+        requested_day = st.slider(t("day", lang), 0, 30, key="v2_day")
+
+    snapshot = get_snapshot(trajectory, int(requested_day))
+    overrides_by_day = st.session_state.setdefault("v2_manual_overrides", {})
+    day_overrides = overrides_by_day.setdefault(int(requested_day), {})
+    if day_overrides:
+        classified, plan = solve_v2_override(
+            snapshot.state_df,
+            int(requested_day),
+            trajectory_params,
+            tuple(sorted(day_overrides.items())),
+        )
+    else:
+        classified, plan = snapshot.classified_df, snapshot.plan
 
     if plan.violations:
         st.error(
@@ -965,8 +986,72 @@ def render_v2_simulation(
     metric_columns[2].metric(t("yellow_served", lang), len(plan.served_yellow))
     metric_columns[3].metric(t("distance", lang), f"{plan.total_distance_m / 1000:.1f} km")
 
-    map_figure, geometry_source = create_simulation_map(classified, plan, DEPOT_COORDS, LANDFILL_COORDS, lang)
-    route_label = t("route_source_osrm" if geometry_source == "osrm" else "route_source_straight", lang)
+    with st.expander("Ручные правки диспетчера" if lang == "ru" else "Dispatcher overrides"):
+        site_options = classified["site_id"].astype(str).tolist()
+        selected_site = st.selectbox(
+            "Площадка" if lang == "ru" else "Site",
+            site_options,
+            format_func=lambda site_id: (
+                f"{site_id} · {classified.loc[classified['site_id'].astype(str).eq(site_id), 'address'].iloc[0]}"
+            ),
+            key=f"override_site_{requested_day}",
+        )
+        include_col, exclude_col, clear_col = st.columns(3)
+        if include_col.button("Включить" if lang == "ru" else "Include", key=f"include_{requested_day}"):
+            day_overrides[selected_site] = "include"
+            st.rerun()
+        if exclude_col.button("Исключить" if lang == "ru" else "Exclude", key=f"exclude_{requested_day}"):
+            day_overrides[selected_site] = "exclude"
+            st.rerun()
+        if clear_col.button("Сбросить" if lang == "ru" else "Clear", key=f"clear_{requested_day}"):
+            day_overrides.pop(selected_site, None)
+            st.rerun()
+        if day_overrides:
+            stretch_dataframe(
+                pd.DataFrame(
+                    [{"site_id": site_id, "override": action} for site_id, action in day_overrides.items()]
+                ),
+                hide_index=True,
+            )
+
+    truck_options = ["ALL", *[route.truck_id for route in plan.routes]]
+    truck_choice = st.selectbox(
+        "Показать машину" if lang == "ru" else "Show truck",
+        truck_options,
+        format_func=lambda value: (
+            "Все машины" if value == "ALL" and lang == "ru" else "All trucks" if value == "ALL" else value
+        ),
+    )
+    selected_truck = None if truck_choice == "ALL" else truck_choice
+    map_figure, geometry_source, straight_segments = create_simulation_map(
+        classified,
+        plan,
+        depot,
+        LANDFILL_COORDS,
+        lang,
+        selected_truck_id=selected_truck,
+        depot_assumed=DEPOT_COORDS_ASSUMED,
+    )
+    if straight_segments:
+        st.warning(
+            (
+                f"ВНИМАНИЕ: {straight_segments} участков показаны пунктиром по прямой; "
+                "дорожная геометрия недоступна. Пробег плана остаётся из дорожной матрицы."
+                if lang == "ru"
+                else f"WARNING: {straight_segments} segments are dashed straight-line fallbacks; "
+                "road geometry is unavailable. Plan distance still comes from the road matrix."
+            )
+        )
+    source_key = (
+        "route_source_cache"
+        if geometry_source == "road_cache"
+        else "route_source_osrm"
+        if geometry_source == "osrm"
+        else "route_source_mixed"
+        if geometry_source == "mixed"
+        else "route_source_straight"
+    )
+    route_label = t(source_key, lang)
     real_count = int(classified["source_real"].sum())
     st.caption(
         t(
@@ -982,7 +1067,10 @@ def render_v2_simulation(
 
     if plan.routes:
         st.subheader("Машины" if lang == "ru" else "Trucks")
-    for route in plan.routes:
+    visible_routes = [
+        route for route in plan.routes if selected_truck is None or route.truck_id == selected_truck
+    ]
+    for route in visible_routes:
         with st.container(border=True):
             st.markdown(f"**{t('truck', lang)} {route.truck_id}**")
             cols = st.columns(4)
@@ -997,18 +1085,29 @@ def render_v2_simulation(
             )
 
     if plan.routes:
-        route_sheet = build_route_sheet(plan, classified, lang)
+        route_sheet = build_route_sheet(
+            plan,
+            classified,
+            "ru",
+            truck_id=selected_truck,
+            simulation_day=int(requested_day),
+        )
+        st.subheader("Порядок остановок" if lang == "ru" else "Ordered stops")
+        stretch_dataframe(
+            route_sheet.rows[route_sheet.rows["status"].isin(["в маршруте", "planned"])],
+            hide_index=True,
+        )
         sheet_csv, sheet_html = st.columns(2)
         sheet_csv.download_button(
             t("download_route_csv", lang),
             route_sheet.to_csv(),
-            file_name=f"route_sheet_day_{current_day}.csv",
+            file_name=f"route_sheet_day_{requested_day}_{selected_truck or 'all'}.csv",
             mime="text/csv",
         )
         sheet_html.download_button(
             t("download_route_html", lang),
             route_sheet.html.encode("utf-8"),
-            file_name=f"route_sheet_day_{current_day}.html",
+            file_name=f"route_sheet_day_{requested_day}_{selected_truck or 'all'}.html",
             mime="text/html",
         )
 
@@ -1018,23 +1117,24 @@ def render_v2_simulation(
             if lang == "ru"
             else f"Skipped YELLOW: {len(plan.skipped_yellow)}"
         ):
+            skipped_frame = pd.DataFrame(
+                {
+                    "site_id": decision.site_id,
+                    "insertion_cost_m": round(decision.insertion_cost_m),
+                    "penalty_m": round(decision.penalty_m),
+                    "volume_m3": round(decision.volume_m3, 3),
+                    "explanation": (
+                        decision.explanation_ru
+                        if lang == "ru"
+                        else f"detour {decision.insertion_cost_m / 1000:.1f} km for "
+                        f"{decision.volume_m3:.2f} m³ exceeds the "
+                        f"{decision.penalty_m / 1000:.1f} km penalty"
+                    ),
+                }
+                for decision in plan.skipped_yellow
+            )
             stretch_dataframe(
-                pd.DataFrame(
-                    {
-                        "site_id": decision.site_id,
-                        "insertion_cost_m": round(decision.insertion_cost_m),
-                        "penalty_m": round(decision.penalty_m),
-                        "volume_m3": round(decision.volume_m3, 3),
-                        "explanation": (
-                            decision.explanation_ru
-                            if lang == "ru"
-                            else f"detour {decision.insertion_cost_m / 1000:.1f} km for "
-                            f"{decision.volume_m3:.2f} m³ exceeds the "
-                            f"{decision.penalty_m / 1000:.1f} km penalty"
-                        ),
-                    }
-                    for decision in plan.skipped_yellow
-                ),
+                skipped_frame.style.set_properties(**{"background-color": "#fef3c7"}),
                 hide_index=True,
             )
 
@@ -1140,6 +1240,7 @@ with st.sidebar:
     planning_horizon = PLANNING_HORIZON_DAYS
     max_interval = MAX_INTERVAL_DAYS
     yellow_tolerance = YELLOW_TOLERANCE
+    depot_lat, depot_lon = DEPOT_COORDS
     if mode == MODE_SIMULATION:
         policy_name = st.radio(
             t("policy", lang),
@@ -1151,6 +1252,22 @@ with st.sidebar:
         planning_horizon = st.slider(t("horizon", lang), 1, 3, PLANNING_HORIZON_DAYS)
         max_interval = st.slider(t("max_interval", lang), 1, 7, MAX_INTERVAL_DAYS)
         yellow_tolerance = st.slider(t("yellow_tolerance", lang), 0.0, 2.0, float(YELLOW_TOLERANCE), 0.25)
+        with st.expander("Парк (предположительно)" if lang == "ru" else "Depot (assumed)"):
+            st.caption(
+                "Изменение координат требует дорожного кэша с этой точкой."
+                if lang == "ru"
+                else "Changing coordinates requires a road cache containing that point."
+            )
+            depot_lat = st.number_input(
+                "Широта" if lang == "ru" else "Latitude",
+                value=float(DEPOT_COORDS[0]),
+                format="%.6f",
+            )
+            depot_lon = st.number_input(
+                "Долгота" if lang == "ru" else "Longitude",
+                value=float(DEPOT_COORDS[1]),
+                format="%.6f",
+            )
     st.subheader("Маршрутизация" if lang == "ru" else "Routing")
     if mode == MODE_SIMULATION:
         engine = ENGINE_CVRP
@@ -1219,6 +1336,7 @@ render_v2_simulation(
     n_trucks=int(n_trucks),
     truck_capacity_kg=float(truck_capacity_kg),
     shift_hours=float(shift_hours),
+    depot=(float(depot_lat), float(depot_lon)),
 )
 st.stop()
 

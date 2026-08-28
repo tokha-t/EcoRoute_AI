@@ -27,7 +27,7 @@ def test_simulation_map_uses_current_token_free_plotly_api() -> None:
         ]
     )
 
-    figure, source = create_simulation_map(
+    figure, source, straight_segments = create_simulation_map(
         world,
         Plan(
             routes=[],
@@ -43,6 +43,7 @@ def test_simulation_map_uses_current_token_free_plotly_api() -> None:
     )
 
     assert source == "straight"
+    assert straight_segments == 0
     assert all(trace.type == "scattermap" for trace in figure.data)
     assert figure.layout.map.style == "carto-positron"
 

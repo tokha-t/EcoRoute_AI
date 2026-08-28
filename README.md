@@ -4,7 +4,7 @@
 
 EcoRoute AI simulates how quickly collection sites fill, classifies mandatory and opportunistic stops, and builds capacity- and shift-safe truck routes with landfill dump trips. The current pilot world covers the OSM sector `Өндіріс` inside Astana's multi-part Baikonur district boundary.
 
-🔗 **Live V2 demo:** [ecoroute-ai-baikonur.streamlit.app](https://ecoroute-ai-baikonur.streamlit.app/)  ·  🏙️ **Built for:** Astana Innovations Accelerator — Ecology & Urban Environment
+🔗 **Live V2.1 demo:** [ecoroute-ai-baikonur.streamlit.app](https://ecoroute-ai-baikonur.streamlit.app/)  ·  🏙️ **Built for:** Astana Innovations Accelerator — Ecology & Urban Environment
 
 ![EcoRoute AI dashboard](assets/screenshots/dashboard.png)
 
@@ -31,6 +31,7 @@ A dispatcher sees the full plan on one map before the shift, tunes how aggressiv
 |---|---|
 | World | 250 sites in `Өндіріс`, the densest selected Baikonur pilot sector |
 | Coordinate provenance | 13 real OSM waste records + 237 sites generated on real streets; all inside the OSM administrative polygon |
+| Distance source | Committed OSRM road cache: full 252×252 matrix, 100% of default 30-day route edges covered offline |
 | Predictive max-interval violations | 0 |
 | Predictive overflow events vs fixed | 171 vs 237 (-27.8%) |
 | Automatically selected YELLOW tolerance | 0.0 (largest tested value improving both distance and overflow) |
@@ -39,11 +40,11 @@ Policy comparison (same four-truck fleet and accumulation sequence):
 
 | Policy | Distance | Overflow events | Max-interval violations |
 |---|---:|---:|---:|
-| Fixed | 6,166 km | 237 | 50 |
-| Predictive, selected tolerance 0.0 | 5,220 km | 171 | 0 |
-| Predictive, tolerance 0.25 | 6,503 km | 124 | 0 |
+| Fixed | 5,565 km | 237 | 50 |
+| Predictive, selected tolerance 0.0 | 4,819 km | 171 | 0 |
+| Predictive, tolerance 0.25 | 6,082 km | 127 | 0 |
 
-> Every KPI above is **simulated**. The run demonstrates policy behavior on real OSM geometry; it does not estimate measured Astana savings. The required seven-point sweep selected tolerance 0.0 because it is the largest tested value improving both headline measures: 15.3% less distance and 27.8% fewer overflow events than fixed. The full report keeps the service-quality trade-off visible instead of hiding it behind one savings figure.
+> Every KPI above is **simulated**. The run demonstrates policy behavior on real OSM geometry; it does not estimate measured Astana savings. The required seven-point sweep selected tolerance 0.0 because it is the largest tested value improving both headline measures: 13.4% less distance and 27.8% fewer overflow events than fixed. The full report keeps the service-quality trade-off visible instead of hiding it behind one savings figure.
 
 ## Key features
 
@@ -52,8 +53,12 @@ Policy comparison (same four-truck fleet and accumulation sequence):
 - Exact RED/YELLOW/GREEN classification with max-interval precedence
 - Two-pass OR-Tools routing with explainable, volume-scaled YELLOW penalties
 - Repeatable landfill dump visits, mandatory empty return, capacity, and shift enforcement
-- RU/EN interactive map and per-truck route panels with an OSRM-offline fallback
-- Printable RU/EN route sheets with the final landfill leg and skipped-YELLOW explanations
+- Build-time OSRM artifact with exact road distances and compressed street geometry; no routing server required in production
+- Real OSM landfill plus an editable, explicitly assumed depot that must be present in the road cache
+- Deterministic 31-snapshot trajectory: day 0 → 30 → 0 is lookup-only after the initial cached build
+- RU/EN map with one/all-truck filtering, explicit landfill → depot legs, and loud dashed-line fallback warnings
+- Russian route sheets with ordered stops, ETA, cumulative load, per-leg distance, manual overrides, and signatures
+- Session-persistent dispatcher include/exclude overrides that re-solve only the selected day
 - Downloadable 30-day report, daily KPI CSV, and full tolerance frontier table/chart
 
 ## Data
@@ -77,7 +82,13 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-The repository includes the generated Baikonur world for offline deployment. Regenerate it with `python -m src.sim.world --out data/world.csv`; run the comparison with `python -m src.sim.run --days 30 --seed 42`.
+The repository includes both the generated Baikonur world and its 0.52 MB road artifact, so the app routes fully offline. Regenerate the world with `python -m src.sim.world --out data/world.csv`; run the comparison with `python -m src.sim.run --days 30 --seed 42`.
+
+To rebuild road data on a machine where OSRM is already running:
+
+```bash
+python scripts/build_road_cache.py --world data/world.csv --osrm http://localhost:5000 --k 25
+```
 
 ## Project structure
 
@@ -85,10 +96,10 @@ The repository includes the generated Baikonur world for offline deployment. Reg
 ecoroute-ai/
 ├── app.py               # Streamlit dashboard
 ├── src/                 # data generation, model, prediction, routing, savings, maps
-│   ├── sim/             # V2 world, fill rules, and 30-day engine
+│   ├── sim/             # V2 world, fill rules, trajectory cache, and 30-day engine
 │   ├── reports/         # printable dispatcher route sheets
-│   └── geo/             # cached Overpass client + real boundary parser
-├── data/                # generated demo data (csv)
+│   └── geo/             # cached OSM infrastructure + polyline codec
+├── data/road_cache/     # full road matrix + compressed route geometry
 ├── reports/             # 30-day KPIs + tolerance frontier table/chart
 ├── models/              # trained model + metrics
 ├── tests/               # core-logic tests

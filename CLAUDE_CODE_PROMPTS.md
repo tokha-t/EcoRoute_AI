@@ -491,6 +491,81 @@ Verify: python -m pytest tests/ -q green; ruff check . clean; report regenerated
 headline no longer shows predictive losing to fixed on km without explanation.
 ```
 
+### S7 — V2.1: real roads offline, instant day navigation, dispatcher usability
+
+Read docs/SPEC_V2_SIMULATION.md §8bis in full (added 2026-08-28). Run as THREE sessions.
+Root cause to keep in mind: OSRM lives at localhost, which does not exist on Streamlit Cloud,
+so every road feature silently degrades to straight lines in deployment.
+
+#### S7a — Precomputed road cache
+
+```text
+Implement §8bis.2 and §8bis.3.
+
+1. src/geo/polyline.py — precision-5 polyline encode/decode, no dependencies, round-trip tested.
+2. scripts/build_road_cache.py — with OSRM reachable, produce data/road_cache/:
+   meta.json, nodes.csv, matrix.npz (float32 meters + seconds, full N x N),
+   geometry.jsonl.gz (k=25 nearest neighbours per node PLUS every depot/landfill edge).
+   Fail the build if the artifact exceeds 25 MB or if OSRM is unreachable.
+   Record coverage_pct in meta.json.
+3. src/optimize/distances.py — lookup order: road cache -> live OSRM -> straight line.
+   Load the cache once (st.cache_resource in the app layer, plain lru_cache in the module).
+   get_route_geometry must return per-segment sources so partial coverage is visible.
+4. Depot and landfill: fetch a real landfill from OSM (landuse=landfill /
+   amenity=waste_transfer_station near Astana), cache like the boundary. Make the depot a
+   UI-settable coordinate, default clearly labelled "предположительно". Both must be inside
+   the road cache; never fall back for these two nodes.
+5. Map honesty: straight-line segments render DASHED plus a prominent warning naming the
+   number of affected segments. Cached road segments render solid.
+
+Do NOT host OSRM anywhere, do NOT add a routing SDK, do NOT commit the .osm.pbf.
+Verify: pytest green; with OSRM stopped but cache present, routes follow streets;
+with the cache deleted, the app says loudly that distances are estimates.
+```
+
+#### S7b — Trajectory precomputation and instant day control
+
+```text
+Implement §8bis.4. The current app re-solves the CVRP for every day on every rerun.
+
+1. src/sim/trajectory.py — build_trajectory(world, params, days=30, seed) -> list[DaySnapshot]
+   (day, state_df, classified_df, plan). Deterministic given (world_hash, params_hash, seed).
+2. Cache with @st.cache_data on that triple AND persist to
+   data/cache/trajectory_<hash>.pkl so restarts do not recompute. Validate the hash on load.
+3. Build shows a real progress bar ("День 7 из 30…"), never a frozen spinner.
+4. Day slider + "Следующий день" become pure lookups. The button must use an on_click
+   callback mutating st.session_state["v2_day"] — do not assign to a widget-keyed value
+   inline during a run. Backwards navigation must not replay anything.
+5. Changing any policy parameter invalidates and rebuilds once, with the progress bar.
+6. Tests: trajectory is deterministic for a fixed seed; day lookup does not call the solver
+   (assert with a spy/mock); disk cache round-trips and is rejected on hash mismatch.
+
+Do NOT change routing logic in this session.
+Verify: pytest green; after the initial build, day 0->30->0 navigation is instant.
+```
+
+#### S7c — Dispatcher view
+
+```text
+Implement §8bis.5.
+
+1. Per-truck selector (one truck or all) on the day view.
+2. Ordered stop table for the selected truck: №, address, class, fill %, ETA, cumulative load,
+   with the landfill and depot legs as explicit rows carrying their own distances.
+3. Route sheet export for the selected day and truck: printable HTML + CSV in Russian,
+   date, truck id, driver signature line. Reuse the M7b module if it exists.
+4. Skipped-yellow panel: site, detour cost, volume, and the Russian explanation string.
+5. Manual override: force-include / force-exclude a site, re-solve that day only, keep
+   overrides in session state, and mark them in the route sheet.
+
+Do NOT add auth, a database, or new dependencies.
+Verify: pytest green; a route sheet for day 3 truck 2 exports with every stop in order,
+including the final polygon and depot legs.
+```
+
+After S7a and S7b: regenerate reports/simulation_30d.* — all earlier KPI numbers used
+haversine distances and are void.
+
 ---
 
 ## Extras (only when needed)

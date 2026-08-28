@@ -37,8 +37,13 @@ MAX_INTERVAL_DAYS = 3
 # Query envelope of the authoritative multi-part OSM relation. It may narrow
 # remote requests but must never be used as the district boundary.
 BAIKONUR_BBOX = (51.1475427, 71.2980936, 51.3511101, 71.7063332)
-DEPOT_COORDS = (51.1735, 71.4010)
-LANDFILL_COORDS = (51.1160, 71.3570)
+# The operator yard is not confirmed yet. This plausible point in the modeled
+# Өндіріс sector is UI-editable and must always be labelled as assumed.
+DEPOT_COORDS = (51.190491, 71.428779)
+DEPOT_COORDS_ASSUMED = True
+# Real OSM landfill way 259330214, selected as the closest mapped landfill to
+# the pilot sector and cached in data/cache/osm/landfill.geojson.
+LANDFILL_COORDS = (51.203790, 71.506687)
 
 RED_THRESHOLD = 70.0
 YELLOW_THRESHOLD = 21.0
