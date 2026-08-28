@@ -2,7 +2,7 @@
 
 **Predictive waste collection & route optimization for smart cities.**
 
-EcoRoute AI predicts how full each waste bin is, picks only the bins that actually need emptying, and builds a shorter truck route — cutting fuel, driver time, cost, and CO₂. Built for Astana as a demo city.
+EcoRoute AI simulates how quickly collection sites fill, classifies mandatory and opportunistic stops, and builds capacity- and shift-safe truck routes with landfill dump trips. Built on real Baikonur-district coordinates in Astana.
 
 🔗 **Live demo:** https://ecoroute-ai-astana.streamlit.app  ·  🏙️ **Built for:** Astana Innovations Accelerator — Ecology & Urban Environment
 
@@ -20,46 +20,44 @@ Cities run waste trucks on **fixed routes** — the same loop every day, emptyin
 
 EcoRoute AI replaces the fixed schedule with a demand-driven one, in four steps:
 
-1. **Predict** bin fill levels with a machine-learning model.
-2. **Prioritise** — only bins above a chosen threshold join today's plan.
-3. **Optimise** the route with nearest-neighbour + 2-opt.
-4. **Quantify** the distance, time, fuel, CO₂, and cost saved.
+1. **Project** tomorrow's fill from each site's stable synthetic accumulation rate.
+2. **Prioritise** RED stops as mandatory and evaluate YELLOW stops by detour per m³.
+3. **Optimise** per-truck routes with OR-Tools, capacity resets at the landfill, and shift limits.
+4. **Compare** fixed, fixed-naive, predictive, and RED-only policies over 30 days.
 
 A dispatcher sees the full plan on one map before the shift, tunes how aggressive collection is, and exports the exact route order.
 
-## Results (latest demo run)
+## Results (latest 30-day simulation)
 
 | Metric | Value |
 |---|---|
-| Model | RandomForestRegressor |
-| MAE / RMSE / R² (synthetic test set) | 4.53 / 5.78 / 0.929 |
-| Demo zone | 180 bins, one Astana truck shift |
-| Bins selected at 75% threshold | 29 of 180 |
-| Optimised route | 38.4 km |
+| World | 250 sites in Baikonur district |
+| Coordinate provenance | 74 real OSM waste records + 176 sites snapped to real streets |
+| Predictive max-interval violations | 0 |
+| Predictive overflow events vs fixed | 199 vs 298 (-33.2%) |
 
-Scenario comparison (vs. visiting all bins on a fixed route):
+Policy comparison (same four-truck fleet and accumulation sequence):
 
-| Scenario | Threshold | Bins selected | Distance saved |
-|---|---|---|---|
-| Conservative | 85% | 12 | 283.8 km |
-| Balanced | 75% | 29 | 266.2 km |
-| Aggressive | 65% | 52 | 246.6 km |
+| Policy | Distance | Overflow events | Max-interval violations |
+|---|---:|---:|---:|
+| Fixed | 5,273 km | 298 | 24 |
+| Predictive RED + YELLOW | 5,806 km | 199 | 0 |
+| Predictive RED only (analysis) | 3,964 km | 242 | 0 |
 
-> Metrics are measured on a **synthetic** dataset (see Data), so every savings figure above is **simulated**. They demonstrate the pipeline works end-to-end. Real-world route-optimization deployments typically report **15–25% distance savings** — that is the pilot target range, not the demo numbers.
+> Every KPI above is **simulated**. The run demonstrates policy behavior on real coordinates; it does not estimate measured Astana savings. The default RED+YELLOW policy trades 10.1% more distance than fixed for 33.2% fewer overflow events in this generated world, while RED-only is an analysis mode—not the operating default.
 
 ## Key features
 
-- ML bin fill-level prediction with feature-importance view
-- Configurable collection threshold + conservative/balanced/aggressive scenarios
-- Nearest-neighbour routing improved by 2-opt
-- Interactive Plotly map with priority-coloured bins and the optimised route
-- City-manager recommendation and critical-bin district alerts
-- Savings dashboard: distance, time, fuel, CO₂, cost (KZT)
-- Downloadable selected-bin and route-order CSVs
+- Deterministic 250-site world generated on cached OSM streets and real district names
+- Exact RED/YELLOW/GREEN classification with max-interval precedence
+- Two-pass OR-Tools routing with explainable, volume-scaled YELLOW penalties
+- Repeatable landfill dump visits with capacity and shift enforcement
+- RU/EN interactive map and per-truck route panels with an OSRM-offline fallback
+- Downloadable 30-day Markdown report and daily KPI CSV
 
 ## Data
 
-Real municipal smart-bin data isn't public, so the prototype uses a **realistic synthetic dataset** built from practical collection factors (district activity, waste type, capacity, weather, time since pickup). **The pipeline is designed so a real IoT sensor feed can replace it without code changes** — that's the first step of a city pilot.
+Real municipal fill history is not available yet, so accumulation and initial fill are synthetic. Coordinates, street geometry, addresses where tagged, and district names come from OpenStreetMap. The generated snapshot records coordinate provenance per site.
 
 ## Tech stack
 
@@ -78,7 +76,7 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-The app auto-generates the demo data and trains the model on first run.
+The repository includes the generated Baikonur world for offline deployment. Regenerate it with `python -m src.sim.world --out data/world.csv`; run the comparison with `python -m src.sim.run --days 30 --seed 42`.
 
 ## Add a screenshot
 
@@ -94,7 +92,10 @@ The image at the top of this README will then display automatically.
 ecoroute-ai/
 ├── app.py               # Streamlit dashboard
 ├── src/                 # data generation, model, prediction, routing, savings, maps
+│   ├── sim/             # V2 world, fill rules, and 30-day engine
+│   └── geo/             # cached Overpass client
 ├── data/                # generated demo data (csv)
+├── reports/             # generated 30-day Markdown + daily KPI CSV
 ├── models/              # trained model + metrics
 ├── tests/               # core-logic tests
 └── assets/screenshots/  # dashboard image(s)

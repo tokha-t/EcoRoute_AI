@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 
 import joblib
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import requests
@@ -22,15 +23,23 @@ from src.app_logic import (
     observations_to_plan_sites,
     show_simulated_banner,
 )
+from src.config import (
+    DEPOT_COORDS,
+    LANDFILL_COORDS,
+    MAX_INTERVAL_DAYS,
+    PLANNING_HORIZON_DAYS,
+    RED_THRESHOLD,
+    YELLOW_THRESHOLD,
+    YELLOW_TOLERANCE,
+)
 from src.data_generator import (
     ASTANA_LATITUDE,
     ASTANA_LONGITUDE,
     BINS_PATH,
-    DISTRICTS,
-    WASTE_TYPES,
     ensure_data_exists,
 )
-from src.map_utils import create_fleet_route_map, create_route_map
+from src.i18n import t
+from src.map_utils import create_fleet_route_map, create_route_map, create_simulation_map
 from src.optimize.distances import apply_road_distances
 from src.optimize.solver import (
     DEFAULT_TRUCK_CAPACITY_KG,
@@ -52,6 +61,15 @@ from src.photo_fill.estimator import (
 from src.predict import assign_priority, predict_fill_levels
 from src.routing import compare_routes
 from src.savings import calculate_savings
+from src.sim.fill import ClassificationParams, advance_day, classify, empty_sites
+from src.sim.run import (
+    DEFAULT_REPORT_CSV,
+    DEFAULT_REPORT_MD,
+    run_comparison,
+    summarize,
+    write_comparison_report,
+)
+from src.sim.world import generate_world
 from src.train_model import METRICS_PATH, MODEL_PATH, train_and_save_model
 
 DEPOT = {"latitude": ASTANA_LATITUDE, "longitude": ASTANA_LONGITUDE}
@@ -808,55 +826,321 @@ def render_live_photo_mode(
         render_photo_eval_page()
 
 
+@st.cache_data(show_spinner=False)
+def load_v2_world() -> pd.DataFrame:
+    path = Path(__file__).parent / "data" / "world.csv"
+    if path.exists():
+        return pd.read_csv(path)
+    return generate_world(seed=42, n_sites=250)
+
+
+def solve_v2_day(
+    world: pd.DataFrame,
+    day: int,
+    classification_params: ClassificationParams,
+    trucks: list[Truck],
+    shift_hours: float,
+    yellow_tolerance: float,
+    reds_only: bool,
+) -> tuple[pd.DataFrame, Plan]:
+    classified = classify(world, day, classification_params)
+    candidates = classified[classified["klass"].isin(["RED", "YELLOW"])].copy()
+    if candidates.empty:
+        return classified, Plan(
+            routes=[],
+            violations=[],
+            dropped_site_ids=[],
+            total_distance_m=0.0,
+            total_duration_s=0.0,
+            distance_source="none",
+            fallback_used=False,
+            mode="reds_only" if reds_only else "predictive",
+        )
+    params = SolverParams(
+        depot=DEPOT_COORDS,
+        landfill=LANDFILL_COORDS,
+        shift_duration_s=shift_hours * 3600,
+        yellow_tolerance=yellow_tolerance,
+        reds_only=reds_only,
+        time_limit_s=1.0,
+    )
+    return classified, plan_routes(candidates, trucks, params)
+
+
+def render_v2_simulation(
+    lang: str,
+    policy_name: str,
+    classification_params: ClassificationParams,
+    yellow_tolerance: float,
+    n_trucks: int,
+    truck_capacity_kg: float,
+    shift_hours: float,
+) -> None:
+    initial_world = load_v2_world()
+    trucks = [
+        Truck(
+            truck_id=f"TRUCK-{index + 1}",
+            capacity_kg=truck_capacity_kg,
+            shift_seconds=shift_hours * 3600,
+        )
+        for index in range(n_trucks)
+    ]
+    reds_only = policy_name == "reds_only"
+    signature = (
+        policy_name,
+        classification_params,
+        yellow_tolerance,
+        n_trucks,
+        truck_capacity_kg,
+        shift_hours,
+    )
+    state_key = "v2_sim_state"
+    state_day_key = "v2_sim_state_day"
+    signature_key = "v2_sim_signature"
+    requested_key = "v2_requested_day"
+    if requested_key not in st.session_state:
+        st.session_state[requested_key] = 0
+    if st.session_state.get(signature_key) != signature:
+        st.session_state[state_key] = initial_world.copy()
+        st.session_state[state_day_key] = 0
+        st.session_state[signature_key] = signature
+
+    st.title(t("title", lang))
+    st.caption(t("subtitle", lang))
+    st.markdown(f'<div class="sim-banner">{t("banner", lang)}</div>', unsafe_allow_html=True)
+
+    day_col, next_col = st.columns([4, 1])
+    with next_col:
+        next_clicked = st.button(t("next_day", lang), disabled=st.session_state[requested_key] >= 30)
+    if next_clicked:
+        st.session_state[requested_key] = min(30, int(st.session_state[requested_key]) + 1)
+    with day_col:
+        requested_day = st.slider(t("day", lang), 0, 30, key=requested_key)
+
+    current_day = int(st.session_state.get(state_day_key, 0))
+    state = st.session_state.get(state_key, initial_world.copy()).copy()
+    if requested_day < current_day:
+        state = initial_world.copy()
+        current_day = 0
+    classified, plan = solve_v2_day(
+        state,
+        current_day,
+        classification_params,
+        trucks,
+        shift_hours,
+        yellow_tolerance,
+        reds_only,
+    )
+    while current_day < requested_day:
+        served_ids = [site_id for route in plan.routes for site_id in route.site_ids]
+        state = empty_sites(state, served_ids, current_day)
+        current_day += 1
+        state = advance_day(state, current_day, np.random.default_rng(42 + current_day))
+        classified, plan = solve_v2_day(
+            state,
+            current_day,
+            classification_params,
+            trucks,
+            shift_hours,
+            yellow_tolerance,
+            reds_only,
+        )
+    st.session_state[state_key] = state
+    st.session_state[state_day_key] = current_day
+
+    if plan.violations:
+        st.error(
+            f"**{t('infeasible', lang)}**\n\n"
+            + "\n".join(f"- {violation}" for violation in plan.violations)
+            + f"\n\n{t('fix', lang)}"
+        )
+
+    red_count = int((classified["klass"] == "RED").sum())
+    metric_columns = st.columns(4)
+    metric_columns[0].metric(t("sites", lang), len(classified))
+    metric_columns[1].metric(t("red", lang), red_count)
+    metric_columns[2].metric(t("yellow_served", lang), len(plan.served_yellow))
+    metric_columns[3].metric(t("distance", lang), f"{plan.total_distance_m / 1000:.1f} km")
+
+    map_figure, geometry_source = create_simulation_map(
+        classified, plan, DEPOT_COORDS, LANDFILL_COORDS, lang
+    )
+    route_label = t(
+        "route_source_osrm" if geometry_source == "osrm" else "route_source_straight", lang
+    )
+    real_count = int(classified["source_real"].sum())
+    st.caption(
+        t(
+            "world_legend",
+            lang,
+            real=real_count,
+            synthetic=len(classified) - real_count,
+        )
+        + f" · {route_label}"
+    )
+    stretch_plotly_chart(map_figure)
+
+    if plan.routes:
+        st.subheader("Машины" if lang == "ru" else "Trucks")
+    for route in plan.routes:
+        with st.container(border=True):
+            st.markdown(f"**{t('truck', lang)} {route.truck_id}**")
+            cols = st.columns(4)
+            cols[0].metric(t("stops", lang), len(route.site_ids))
+            cols[1].metric(t("distance", lang), f"{route.distance_m / 1000:.1f} km")
+            cols[2].metric(t("duration", lang), f"{route.duration_s / 3600:.1f} h")
+            cols[3].metric(t("dumps", lang), route.dump_stops)
+            load_ratio = min(1.0, route.max_segment_load_kg / truck_capacity_kg)
+            st.progress(load_ratio, text=f"{t('load', lang)}: {route.max_segment_load_kg:.0f} / {truck_capacity_kg:.0f} kg")
+
+    if plan.skipped_yellow:
+        with st.expander(
+            f"Пропущенные YELLOW: {len(plan.skipped_yellow)}"
+            if lang == "ru"
+            else f"Skipped YELLOW: {len(plan.skipped_yellow)}"
+        ):
+            stretch_dataframe(
+                pd.DataFrame(
+                    {
+                        "site_id": decision.site_id,
+                        "insertion_cost_m": round(decision.insertion_cost_m),
+                        "penalty_m": round(decision.penalty_m),
+                        "volume_m3": round(decision.volume_m3, 3),
+                        "explanation": (
+                            decision.explanation_ru
+                            if lang == "ru"
+                            else f"detour {decision.insertion_cost_m / 1000:.1f} km for "
+                            f"{decision.volume_m3:.2f} m³ exceeds the "
+                            f"{decision.penalty_m / 1000:.1f} km penalty"
+                        ),
+                    }
+                    for decision in plan.skipped_yellow
+                ),
+                hide_index=True,
+            )
+
+    if st.button(t("run_30", lang), type="primary"):
+        with st.spinner("Считаем 30 дней…" if lang == "ru" else "Running 30 days…"):
+            results = run_comparison(
+                initial_world,
+                days=30,
+                seed=42,
+                trucks=trucks,
+                classification_params=classification_params,
+                yellow_tolerance=yellow_tolerance,
+            )
+            write_comparison_report(initial_world, results)
+            st.session_state["v2_report_summaries"] = {
+                policy: summarize(records, len(initial_world)) for policy, records in results.items()
+            }
+    summaries = st.session_state.get("v2_report_summaries")
+    if summaries:
+        st.subheader(t("comparison", lang))
+        summary_df = pd.DataFrame(summaries).T.reset_index(names="policy")
+        stretch_dataframe(summary_df, hide_index=True)
+        download_1, download_2 = st.columns(2)
+        if DEFAULT_REPORT_MD.exists():
+            download_1.download_button(
+                t("download_report", lang),
+                DEFAULT_REPORT_MD.read_bytes(),
+                file_name="simulation_30d.md",
+                mime="text/markdown",
+            )
+        if DEFAULT_REPORT_CSV.exists():
+            download_2.download_button(
+                t("download_csv", lang),
+                DEFAULT_REPORT_CSV.read_bytes(),
+                file_name="simulation_30d.csv",
+                mime="text/csv",
+            )
+
+
 inject_styles()
 
 with st.sidebar:
-    st.header("Operations Control")
+    lang = st.radio("Язык / Language", ["ru", "en"], format_func=lambda value: value.upper(), horizontal=True)
+    st.header("Управление" if lang == "ru" else "Operations Control")
     mode = st.radio(
-        "Mode",
+        "Режим" if lang == "ru" else "Mode",
         list(MODES),
         index=0,
         key=MODE_TOGGLE_KEY,
-        help="Simulation: synthetic 180-bin sandbox for the demo. "
-        "Live photo: upload real container photos; confirmed sites form today's plan.",
+        format_func=lambda value: (
+            "Симуляция" if value == MODE_SIMULATION and lang == "ru" else
+            "Фото с площадки" if value == MODE_LIVE_PHOTO and lang == "ru" else value
+        ),
+        help=(
+            "Симуляция: 250 площадок на реальных координатах. Фото: оценки реальных "
+            "снимков формируют план на сегодня."
+            if lang == "ru"
+            else "Simulation: 250 sites on real coordinates. Live photo: real photo "
+            "estimates form today's plan."
+        ),
     )
     threshold, district_filter, waste_type_filter = 75, "All", "All"
+    policy_name = "predictive"
+    yellow_threshold = YELLOW_THRESHOLD
+    red_threshold = RED_THRESHOLD
+    planning_horizon = PLANNING_HORIZON_DAYS
+    max_interval = MAX_INTERVAL_DAYS
+    yellow_tolerance = YELLOW_TOLERANCE
     if mode == MODE_SIMULATION:
-        threshold = st.slider("Collection threshold (%)", min_value=50, max_value=95, value=75, step=5)
-        district_filter = st.selectbox("District", ["All"] + DISTRICTS)
-        waste_type_filter = st.selectbox("Waste type", ["All"] + WASTE_TYPES)
-    st.subheader("Routing")
-    if mode == MODE_SIMULATION:
-        engine = st.radio(
-            "Engine",
-            [ENGINE_CVRP, ENGINE_CLASSIC],
-            index=0,
-            help="CVRP plans per-truck routes with capacity and shift limits; "
-            "Classic keeps the legacy single-loop 2-opt route.",
+        policy_name = st.radio(
+            t("policy", lang),
+            ["predictive", "reds_only"],
+            format_func=lambda value: t(value, lang),
         )
+        yellow_threshold = st.slider(t("yellow_threshold", lang), 0, 69, int(YELLOW_THRESHOLD))
+        red_threshold = st.slider(t("red_threshold", lang), yellow_threshold + 1, 100, int(RED_THRESHOLD))
+        planning_horizon = st.slider(t("horizon", lang), 1, 3, PLANNING_HORIZON_DAYS)
+        max_interval = st.slider(t("max_interval", lang), 1, 7, MAX_INTERVAL_DAYS)
+        yellow_tolerance = st.slider(
+            t("yellow_tolerance", lang), 0.5, 2.0, float(YELLOW_TOLERANCE), 0.1
+        )
+    st.subheader("Маршрутизация" if lang == "ru" else "Routing")
+    if mode == MODE_SIMULATION:
+        engine = ENGINE_CVRP
     else:
         engine = ENGINE_CVRP
         st.caption("Live photo mode always plans with CVRP (OR-Tools).")
-    n_trucks = st.slider("Trucks", min_value=MIN_TRUCKS, max_value=MAX_TRUCKS, value=2)
+    n_trucks = st.slider(
+        "Машины" if lang == "ru" else "Trucks",
+        min_value=MIN_TRUCKS,
+        max_value=5 if mode == MODE_SIMULATION else MAX_TRUCKS,
+        value=4 if mode == MODE_SIMULATION else 2,
+    )
     truck_capacity_kg = st.number_input(
-        "Truck capacity (kg)",
+        "Вместимость машины (кг)" if lang == "ru" else "Truck capacity (kg)",
         min_value=500,
         max_value=20_000,
         value=int(DEFAULT_TRUCK_CAPACITY_KG),
         step=500,
     )
-    shift_hours = st.slider("Shift length (h)", min_value=4, max_value=12, value=DEFAULT_SHIFT_HOURS)
+    shift_hours = st.slider(
+        "Длительность смены (ч)" if lang == "ru" else "Shift length (h)",
+        min_value=4,
+        max_value=12,
+        value=DEFAULT_SHIFT_HOURS,
+    )
     if mode == MODE_SIMULATION:
-        st.markdown(
+        sidebar_note = (
             """
             <div class="sidebar-note">
-                <strong>Demo scale</strong>
-                180 live bins represent one dispatch zone for a truck shift. The model trains on
-                4,500 synthetic historical observations so the demo stays fast and stable.
+                <strong>Смоделированный район</strong><br>
+                250 площадок на реальных координатах района Байқоңыр. Все темпы накопления
+                синтетические; результат не является измеренной экономией.
             </div>
-            """,
-            unsafe_allow_html=True,
+            """
+            if lang == "ru"
+            else """
+            <div class="sidebar-note">
+                <strong>Modeled district</strong><br>
+                250 sites on real Baikonur coordinates. All accumulation rates are synthetic;
+                this is not measured savings.
+            </div>
+            """
         )
+        st.markdown(sidebar_note, unsafe_allow_html=True)
 
 
 if mode == MODE_LIVE_PHOTO:
@@ -864,6 +1148,23 @@ if mode == MODE_LIVE_PHOTO:
         ensure_data_exists()
     render_live_photo_mode(load_bins(), int(n_trucks), float(truck_capacity_kg), float(shift_hours))
     st.stop()
+
+
+render_v2_simulation(
+    lang=lang,
+    policy_name=policy_name,
+    classification_params=ClassificationParams(
+        red_threshold=float(red_threshold),
+        yellow_threshold=float(yellow_threshold),
+        planning_horizon_days=int(planning_horizon),
+        max_interval_days=int(max_interval),
+    ),
+    yellow_tolerance=float(yellow_tolerance),
+    n_trucks=int(n_trucks),
+    truck_capacity_kg=float(truck_capacity_kg),
+    shift_hours=float(shift_hours),
+)
+st.stop()
 
 
 render_hero(threshold, district_filter, waste_type_filter)

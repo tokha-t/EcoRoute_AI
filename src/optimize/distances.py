@@ -43,6 +43,12 @@ class DistanceMatrix:
     source: str  # "osrm" | "haversine" | "trivial"
 
 
+@dataclass(frozen=True)
+class RouteGeometry:
+    points: list[Point]
+    source: str  # "osrm" | "straight"
+
+
 def haversine_meters(a: Point, b: Point) -> float:
     lat1, lon1 = radians(a[0]), radians(a[1])
     lat2, lon2 = radians(b[0]), radians(b[1])
@@ -192,6 +198,35 @@ def get_matrix(
 
     _write_cache(cache_file, rounded, mode, seconds, meters)
     return DistanceMatrix(seconds=seconds, meters=meters, fallback_used=False, source="osrm")
+
+
+def get_route_geometry(
+    points: Sequence[Point],
+    mode: str = DEFAULT_MODE,
+    *,
+    base_url: str = OSRM_BASE_URL,
+    timeout: float = 0.75,
+) -> RouteGeometry:
+    """Follow OSRM roads for an ordered route, or return honest straight segments."""
+    rounded = _rounded_points(points)
+    if len(rounded) < 2:
+        return RouteGeometry(rounded, "straight")
+    coords = ";".join(f"{lon:.6f},{lat:.6f}" for lat, lon in rounded)
+    try:
+        response = requests.get(
+            f"{base_url}/route/v1/{mode}/{coords}",
+            params={"overview": "full", "geometries": "geojson", "steps": "false"},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        raw = payload["routes"][0]["geometry"]["coordinates"]
+        geometry = [(float(lonlat[1]), float(lonlat[0])) for lonlat in raw]
+        if len(geometry) < 2:
+            raise ValueError("empty route geometry")
+        return RouteGeometry(geometry, "osrm")
+    except (requests.RequestException, ValueError, KeyError, IndexError, TypeError):
+        return RouteGeometry(rounded, "straight")
 
 
 def _route_coords(route_points: Sequence[dict]) -> list[Point]:

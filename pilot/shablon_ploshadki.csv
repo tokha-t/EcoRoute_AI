@@ -1,0 +1,3 @@
+id_ploshadki,adres,shirota,dolgota,kolichestvo_konteynerov,obem_konteynera_l,tip_zastroyki,grafik_vyvoza,primechanie
+P-001,"ул. Примерная, 15",51.180813,71.414301,4,1100,mnogoetazhnaya,"пн,ср,пт",пример строки — удалить
+P-002,"ул. Примерная, 22",51.178200,71.410500,2,660,chastnyy_sektor,ежедневно,пример строки — удалить

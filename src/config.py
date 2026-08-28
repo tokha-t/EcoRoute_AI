@@ -32,3 +32,30 @@ CONFIDENCE_THRESHOLD = 0.6  # below this, a photo goes to the manual-check list
 # A site overdue this many days is always Critical + must_serve, regardless of
 # predicted fill (P0, SPEC_V1 6.4). Never remove or weaken.
 MAX_INTERVAL_DAYS = 3
+
+# --- V2 predictive collection simulation --------------------------------
+# Real operational values must replace these simulation defaults during the
+# pilot. Coordinates are inside Astana's Baikonur district.
+BAIKONUR_BBOX = (51.13, 71.34, 51.22, 71.47)  # south, west, north, east
+DEPOT_COORDS = (51.1735, 71.4010)
+LANDFILL_COORDS = (51.1160, 71.3570)
+
+RED_THRESHOLD = 70.0
+YELLOW_THRESHOLD = 21.0
+OVERFLOW_LIMIT = 100.0
+PLANNING_HORIZON_DAYS = 1
+
+LANDFILL_SERVICE_SECONDS = 900.0
+MAX_DUMP_TRIPS = 4
+YELLOW_TOLERANCE = 1.0
+FALLBACK_COST_PER_M3_M = 1_200.0
+SIMULATION_DAYS = 30
+
+BASE_RATE = {
+    "multistorey": 42.0,
+    "private": 14.0,
+    "commercial": 55.0,
+    "mixed": 30.0,
+}
+WEEKDAY_FACTOR_RESIDENTIAL = (1.0, 1.0, 1.0, 1.0, 1.15, 1.25, 1.1)
+WEEKDAY_FACTOR_COMMERCIAL = (1.0, 1.0, 1.0, 1.0, 1.15, 0.6, 0.6)

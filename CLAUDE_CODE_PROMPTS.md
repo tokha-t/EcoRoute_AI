@@ -233,6 +233,213 @@ Verify: python -m pytest tests/ -q green; ruff check . clean.
 
 ---
 
+## M7 — Pilot readiness: Baikonur demo + Russian UI + real-data import
+
+Context change: a real pilot was offered in Baikonur district, Astana (operator:
+ТОО «ГорКомТранс»), target start 1–2 Sept. The demo audience is now the akimat and
+a dispatcher, not a hackathon jury. Run these as THREE separate sessions, in order.
+
+### M7a — Baikonur demo data (do first)
+
+```text
+Goal: the demo must show Baikonur district, not an abstract Astana blob.
+
+1. New module src/geo/osm_sites.py:
+   fetch_container_sites(bbox) -> DataFrame — queries the Overpass API for
+   amenity=waste_disposal and amenity=recycling nodes/ways (way -> use center),
+   returns id, lat, lon, tags. Cache the raw response to data/cache/osm_sites.json;
+   if Overpass is unreachable, fall back to the cached file, and if that is absent
+   raise a clear error. Include a CLI: python -m src.geo.osm_sites --bbox ...
+2. Also fetch real place names: query Overpass for place=suburb/neighbourhood
+   inside the same bbox, so demo sites carry REAL microdistrict names.
+   Do NOT invent district names.
+3. src/data_generator.py: add generate_bins_for_area(sites_df, place_names, seed)
+   that builds the demo snapshot on REAL coordinates and REAL place names,
+   keeping every existing column so predict/solver/app work unchanged.
+   Keep the old generator working for tests.
+4. If Overpass returns fewer than 40 sites in the Baikonur bbox (likely — OSM
+   coverage of container pads is thin), synthesize the remainder along real
+   residential streets from OSM instead of random offsets, and record in the
+   returned DataFrame a boolean column `source_real` so the UI can state
+   honestly how many sites are real OSM records vs. placeholders.
+5. Baikonur bbox to use as default: south=51.13, west=71.34, north=51.22, east=71.47
+   (verify against the OSM relation for Байқоңыр ауданы if you can fetch it).
+6. Tests: mocked Overpass response, cache fallback path, source_real accounting,
+   generated frame passes the existing predict + solver contracts.
+
+Do NOT: change the UI yet, remove the synthetic generator, or hardcode names.
+Verify: pytest green; CLI prints how many real sites were found.
+```
+
+### M7b — Russian UI + route sheet export
+
+```text
+Audience is a Russian-speaking dispatcher and akimat officials.
+
+1. New src/i18n.py: simple dict-based translations {key: {"ru": ..., "en": ...}},
+   t(key, lang) helper. No gettext, no new dependency.
+2. Sidebar language switch RU | EN, default RU. Translate every user-visible
+   string in app.py: headers, metric labels, priority names
+   (Critical->Критическая, High->Высокая, Medium->Средняя, Skip->Пропустить),
+   buttons, the simulated-data banner, error and empty states.
+   Keep code, comments, and column names in English.
+3. New src/reports/route_sheet.py: build_route_sheet(plan, sites_df, lang)
+   -> printable маршрутный лист per truck: date, truck id, ordered stops with
+   address + container count + predicted fill + priority, cumulative km,
+   estimated shift time, signature lines for driver and dispatcher.
+   Export as CSV and as printable HTML (no new PDF dependency — the browser
+   prints the HTML). Download buttons in the app.
+4. Tests: i18n has no missing keys in either language (assert key sets match),
+   route sheet contains every must-serve site, stop order matches the plan.
+
+Do NOT: translate code identifiers, add a PDF library, or restructure app.py.
+Verify: pytest green; switch to RU and confirm no English leaks on the main screen.
+```
+
+### M7c — Real registry import
+
+```text
+Goal: when the operator sends their Excel, it loads the same day.
+
+1. New src/ingest/registry.py:
+   load_registry(path) reads CSV or XLSX (openpyxl is allowed) matching
+   pilot/shablon_ploshadki.csv columns:
+   id_ploshadki, adres, shirota, dolgota, kolichestvo_konteynerov,
+   obem_konteynera_l, tip_zastroyki, grafik_vyvoza, primechanie.
+   - Tolerant column matching (case, spaces, common RU synonyms).
+   - Rows without coordinates are kept and flagged needs_geocoding=True
+     (do NOT auto-geocode; just report the count).
+   - Returns (sites_df in the internal schema, report) where report lists
+     row count, missing fields, duplicates, out-of-bbox coordinates.
+2. App: "Импорт реестра" uploader in the sidebar → shows the validation report →
+   on confirm, replaces the demo snapshot for the session. Never overwrite
+   data/bins.csv silently; write to data/imported_sites.csv.
+3. When imported data is active, the simulated-data banner must switch to
+   "данные оператора" — the honesty invariant works in both directions.
+4. Tests: template file parses, messy variants (extra spaces, RU synonyms,
+   missing coords, duplicate ids) produce the right report, internal schema
+   is valid for predict + solver.
+
+Do NOT: add a database, geocode automatically, or accept files >20 MB.
+Verify: pytest green; pilot/shablon_ploshadki.csv imports cleanly.
+```
+
+---
+
+## V2 simulation — S1…S5 (run one per session, in order)
+
+Source of truth: `docs/SPEC_V2_SIMULATION.md`. Copy it into the repo first and commit.
+Each session: read the named spec sections, implement, test, stop. Do not run ahead.
+
+### S1 — Synthetic world on real coordinates
+
+```text
+Read docs/SPEC_V2_SIMULATION.md sections 2 and 3. Implement src/sim/world.py only.
+
+- Overpass queries for container sites, residential street geometry, place names, building
+  tags (one module src/geo/overpass.py, plain HTTP via requests, no new deps).
+- Cache every raw Overpass response under data/cache/osm/*.json; if the API is unreachable,
+  load from cache; if cache is empty, raise a clear error naming the fix.
+- generate_world(seed, n_sites=250, bbox=BAIKONUR) -> DataFrame with every field in §2.1.
+- Fill-rate formula exactly as §3.5; weekday factors as §3.6 exposed as a function.
+- Deterministic: same seed + same cache => identical DataFrame (assert in tests).
+- CLI: python -m src.sim.world --out data/world.csv  (prints real vs synthesized counts).
+
+Do NOT touch app.py, the solver, or existing predict.py in this session.
+Verify: pytest green; CLI writes a CSV with >=200 rows and real district names.
+```
+
+### S2 — Fill model and classification
+
+```text
+Read docs/SPEC_V2_SIMULATION.md section 4. Implement src/sim/fill.py only.
+
+- advance_day(world_df, day, rng) -> world_df with fill_pct increased per §4.1.
+  Fill is NOT clipped at 100; overflow is a real state that must be countable.
+- classify(world_df, day, params) -> adds columns: klass (GREEN|YELLOW|RED),
+  reason (max_interval|high_fill|overflow_predicted|none), must_serve (bool),
+  projected_fill_pct.
+- Rule precedence exactly as §4.2. All thresholds from src/config.py, no literals.
+- Tests must include the three worked examples in §8 acceptance criteria, plus:
+  boundary at exactly RED_THRESHOLD, exactly MAX_INTERVAL_DAYS, H=3 horizon,
+  and that a GREEN site overdue past max interval is RED with reason max_interval.
+
+Do NOT wire this into the app yet; do not modify src/predict.py (legacy stays).
+Verify: pytest green.
+```
+
+### S3 — Routing with landfill dump trips
+
+```text
+Read docs/SPEC_V2_SIMULATION.md section 5. Extend src/optimize/solver.py.
+
+- Add landfill node support: a route may visit the landfill multiple times; each visit resets
+  the load dimension to zero and costs LANDFILL_SERVICE_SECONDS plus travel.
+  Use OR-Tools reload/refill node modelling (duplicate landfill nodes, capacity dimension
+  slack reset). Document the approach in the module docstring.
+- YELLOW handling per §5.3 — this is the core product rule, implement it exactly:
+  two-pass solve, Pass 1 = RED only to compute reference_cost (meters per m³),
+  Pass 2 = RED mandatory + YELLOW as droppable optional nodes with
+  drop_penalty = volume_m3 * reference_cost * YELLOW_TOLERANCE (default 1.0, config).
+  Fall back to FALLBACK_COST_PER_M3_M when Pass 1 has zero volume.
+  Record for every yellow: insertion_cost, penalty, served/skipped, and a Russian
+  explanation string for the UI.
+- A `reds_only` flag routes RED alone (analysis mode, not the default).
+- Preflight infeasibility checks per §5.4 returning named, human-readable Russian messages.
+- Plan object gains: dump_stops per route, served_yellow, skipped_yellow (with reasons),
+  unserved_red, reference_cost, mode.
+- Tests: capacity respected between dumps; a fleet whose demand is 2.5x capacity produces
+  routes with dump trips rather than an infeasibility; every RED appears exactly once;
+  a yellow on the path is served; the same yellow moved 3 km away with small volume is
+  skipped; a large-volume yellow at 3 km is served (penalty scales with volume);
+  dropping yellow never causes an unserved RED; infeasible case returns a report naming
+  the site.
+
+Do NOT change the UI in this session.
+Verify: pytest green; 250 sites / 3 trucks solves under 30 s.
+```
+
+### S4 — 30-day simulation engine and report
+
+```text
+Read docs/SPEC_V2_SIMULATION.md section 6. Implement src/sim/run.py.
+
+- simulate(world, policy, days=30, seed) -> DailyRecord list, for policies:
+  "fixed" (calendar schedule, same CVRP solver), "fixed_naive" (bin_id order routing),
+  "predictive" (S2 classification + S3 default yellow rule), and
+  "predictive_reds_only" (S3 reds_only flag, for contrast).
+- Every KPI in the §6 table, per day and aggregated.
+- Writes reports/simulation_30d.md (summary table + per-policy deltas) and
+  reports/simulation_30d.csv (daily rows).
+- The report MUST print overflow_events and max_interval_violations next to any km saving,
+  per §6. Add a test asserting the report contains all three.
+- CLI: python -m src.sim.run --days 30 --seed 42
+
+Do NOT add charts here (UI session next). Keep runtime under 5 minutes.
+Verify: pytest green; report generated; predictive shows 0 max-interval violations.
+```
+
+### S5 — Map, routes and day controls in the app
+
+```text
+Read docs/SPEC_V2_SIMULATION.md section 7. Fix and rebuild the map UI.
+
+1. FIRST diagnose why the current map does not render on Streamlit Cloud — check the
+   Plotly map style (mapbox styles needing a token vs open styles), and report the cause
+   before fixing. Use an open style requiring no token, or pydeck.
+2. Site markers coloured by klass, sized by capacity, hover per §7.1.
+3. Per-truck route polylines using OSRM /route geometry when available, straight segments
+   labelled "прямые линии" otherwise. Depot and landfill icons distinct.
+4. Truck panel, day slider + "следующий день", "прогон 30 дней" button rendering the report.
+5. Policy controls per §7.5 wired to config defaults.
+6. Legend states real-vs-synthesized site counts; simulated banner stays.
+
+Do NOT add new dependencies beyond what is already in requirements.txt.
+Verify: pytest green; map renders with OSRM stopped; screenshot the 3 policy views.
+```
+
+---
+
 ## Extras (only when needed)
 
 - **P1 landfill dumps** (after M2 works): "Add optional landfill refill node to solver.py: trucks may visit LANDFILL coords mid-route to reset load when capacity would otherwise be violated. Test: demand 2× capacity, 1 truck → solution contains exactly one dump visit."

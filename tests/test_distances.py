@@ -12,6 +12,7 @@ from src.optimize.distances import (
     FALLBACK_SPEED_KMH,
     apply_road_distances,
     get_matrix,
+    get_route_geometry,
     haversine_meters,
 )
 
@@ -56,6 +57,14 @@ class HaversineTest(unittest.TestCase):
         self.assertAlmostEqual(
             haversine_meters(DEPOT, POINT_A), haversine_meters(POINT_A, DEPOT), places=6
         )
+
+
+class RouteGeometryTest(unittest.TestCase):
+    def test_osrm_outage_returns_straight_segments(self) -> None:
+        with patch("src.optimize.distances.requests.get", side_effect=requests.ConnectionError):
+            geometry = get_route_geometry([DEPOT, POINT_A, POINT_B])
+        self.assertEqual(geometry.source, "straight")
+        self.assertEqual(geometry.points, [DEPOT, POINT_A, POINT_B])
 
 
 class FallbackMatrixTest(unittest.TestCase):

@@ -10,7 +10,11 @@ venv/
 !.streamlit/
 !.streamlit/config.toml
 .ipynb_checkpoints/
-data/cache/
+!data/cache/
+data/cache/*
+!data/cache/osm/
+data/cache/osm/*
+!data/cache/osm/overpass_ee673ca7af22f213a27c.json.gz
 .claude/settings.local.json
 outputs/
 data/photos/*

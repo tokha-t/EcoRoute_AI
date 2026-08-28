@@ -4,6 +4,8 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from src.data_generator import ASTANA_LATITUDE, ASTANA_LONGITUDE
+from src.optimize.distances import Point, get_route_geometry
+from src.optimize.solver import Plan
 
 PRIORITY_COLORS = {
     "Critical": "#dc2626",
@@ -199,3 +201,112 @@ def create_fleet_route_map(
         )
     _add_depot_and_layout(fig, all_bins_df, depot)
     return fig
+
+
+def create_simulation_map(
+    world_df: pd.DataFrame,
+    plan: Plan,
+    depot: Point,
+    landfill: Point,
+    lang: str = "ru",
+) -> tuple[go.Figure, str]:
+    """V2 class map with road-following truck overlays and an offline fallback."""
+    fig = go.Figure()
+    class_colors = {"GREEN": "#16a34a", "YELLOW": "#eab308", "RED": "#dc2626"}
+    for klass in ("GREEN", "YELLOW", "RED"):
+        sites = world_df[world_df["klass"] == klass]
+        if sites.empty:
+            continue
+        sizes = 7 + 13 * (
+            sites["capacity_liters"].astype(float) / world_df["capacity_liters"].max()
+        ) ** 0.5
+        labels = (
+            ("Заполнение", "ПЕРЕПОЛНЕНИЕ", "Темп", "Дней после вывоза", "Класс", "Причина")
+            if lang == "ru"
+            else ("Fill", "OVERFLOW", "Rate", "Days since service", "Class", "Reason")
+        )
+        reason_labels = {
+            "max_interval": "максимальный интервал" if lang == "ru" else "maximum interval",
+            "high_fill": "высокое заполнение" if lang == "ru" else "high fill",
+            "overflow_predicted": "прогноз переполнения" if lang == "ru" else "overflow predicted",
+            "none": "нет" if lang == "ru" else "none",
+        }
+        hover = [
+            "<br>".join(
+                [
+                    f"<b>{row.address}</b>",
+                    f"{labels[0]}: {min(float(row.fill_pct), 100):.1f}%"
+                    + (f" · {labels[1]}" if float(row.fill_pct) > 100 else ""),
+                    f"{labels[2]}: {float(row.daily_fill_rate_pct):.1f}%/"
+                    + ("день" if lang == "ru" else "day"),
+                    f"{labels[3]}: {int(row.days_since_service)}",
+                    f"{labels[4]}: {row.klass}",
+                    f"{labels[5]}: {reason_labels.get(row.reason, row.reason)}",
+                ]
+            )
+            for row in sites.itertuples()
+        ]
+        fig.add_trace(
+            go.Scattermapbox(
+                lat=sites["lat"],
+                lon=sites["lon"],
+                mode="markers",
+                marker={"size": sizes, "color": class_colors[klass], "opacity": 0.82},
+                text=hover,
+                hoverinfo="text",
+                name=klass,
+            )
+        )
+
+    by_id = world_df.set_index("site_id")
+    geometry_sources: set[str] = set()
+    for index, route in enumerate(plan.routes):
+        ordered_points: list[Point] = [depot]
+        for stop in route.ordered_stops:
+            if stop == "LANDFILL":
+                ordered_points.append(landfill)
+            elif stop in by_id.index:
+                row = by_id.loc[stop]
+                ordered_points.append((float(row["lat"]), float(row["lon"])))
+        ordered_points.append(depot)
+        geometry = get_route_geometry(ordered_points)
+        geometry_sources.add(geometry.source)
+        fig.add_trace(
+            go.Scattermapbox(
+                lat=[point[0] for point in geometry.points],
+                lon=[point[1] for point in geometry.points],
+                mode="lines",
+                line={"width": 5, "color": TRUCK_ROUTE_COLORS[index % len(TRUCK_ROUTE_COLORS)]},
+                name=route.truck_id,
+                hoverinfo="name",
+            )
+        )
+
+    infrastructure = (
+        (depot, "#2563eb", "Депо" if lang == "ru" else "Depot"),
+        (landfill, "#7c2d12", "Полигон" if lang == "ru" else "Landfill"),
+    )
+    for point, color, label in infrastructure:
+        fig.add_trace(
+            go.Scattermapbox(
+                lat=[point[0]],
+                lon=[point[1]],
+                mode="markers",
+                marker={"size": 19, "color": color},
+                hovertext=[label],
+                hoverinfo="text",
+                name=label,
+            )
+        )
+    fig.update_layout(
+        mapbox={
+            "style": "carto-positron",
+            "center": {"lat": float(world_df["lat"].mean()), "lon": float(world_df["lon"].mean())},
+            "zoom": 11.2,
+        },
+        height=720,
+        margin={"r": 0, "t": 0, "l": 0, "b": 0},
+        legend={"orientation": "h", "y": 1.02, "x": 0},
+    )
+    source = "osrm" if geometry_sources == {"osrm"} else "straight"
+    return fig, source
