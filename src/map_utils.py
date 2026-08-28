@@ -54,7 +54,7 @@ def _add_bin_markers(fig: go.Figure, all_bins_df: pd.DataFrame) -> None:
             opacity = 0.9
 
         fig.add_trace(
-            go.Scattermapbox(
+            go.Scattermap(
                 lat=priority_df["latitude"],
                 lon=priority_df["longitude"],
                 mode="markers",
@@ -83,7 +83,7 @@ def _add_route_traces(
         return
 
     fig.add_trace(
-        go.Scattermapbox(
+        go.Scattermap(
             lat=[point["latitude"] for point in route_points],
             lon=[point["longitude"] for point in route_points],
             mode="lines",
@@ -96,7 +96,7 @@ def _add_route_traces(
 
     stop_points = [point for point in route_points[1:-1]]
     fig.add_trace(
-        go.Scattermapbox(
+        go.Scattermap(
             lat=[point["latitude"] for point in stop_points],
             lon=[point["longitude"] for point in stop_points],
             mode="markers+text" if show_labels else "markers",
@@ -130,7 +130,7 @@ def _add_depot_and_layout(fig: go.Figure, all_bins_df: pd.DataFrame, depot: dict
     map_zoom = 11.05 if len(all_bins_df) > 120 else 11.35 if len(all_bins_df) > 75 else 12.0
 
     fig.add_trace(
-        go.Scattermapbox(
+        go.Scattermap(
             lat=[depot["latitude"]],
             lon=[depot["longitude"]],
             mode="markers",
@@ -146,7 +146,7 @@ def _add_depot_and_layout(fig: go.Figure, all_bins_df: pd.DataFrame, depot: dict
     )
 
     fig.update_layout(
-        mapbox={
+        map={
             "style": "carto-positron",
             "center": map_center,
             "zoom": map_zoom,
@@ -247,7 +247,7 @@ def create_simulation_map(
             for row in sites.itertuples()
         ]
         fig.add_trace(
-            go.Scattermapbox(
+            go.Scattermap(
                 lat=sites["lat"],
                 lon=sites["lon"],
                 mode="markers",
@@ -272,7 +272,7 @@ def create_simulation_map(
         geometry = get_route_geometry(ordered_points)
         geometry_sources.add(geometry.source)
         fig.add_trace(
-            go.Scattermapbox(
+            go.Scattermap(
                 lat=[point[0] for point in geometry.points],
                 lon=[point[1] for point in geometry.points],
                 mode="lines",
@@ -288,7 +288,7 @@ def create_simulation_map(
     )
     for point, color, label in infrastructure:
         fig.add_trace(
-            go.Scattermapbox(
+            go.Scattermap(
                 lat=[point[0]],
                 lon=[point[1]],
                 mode="markers",
@@ -299,7 +299,7 @@ def create_simulation_map(
             )
         )
     fig.update_layout(
-        mapbox={
+        map={
             "style": "carto-positron",
             "center": {"lat": float(world_df["lat"].mean()), "lon": float(world_df["lon"].mean())},
             "zoom": 11.2,
