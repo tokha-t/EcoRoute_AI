@@ -4,11 +4,9 @@
 
 EcoRoute AI simulates how quickly collection sites fill, classifies mandatory and opportunistic stops, and builds capacity- and shift-safe truck routes with landfill dump trips. Built on real Baikonur-district coordinates in Astana.
 
-🔗 **Live demo:** https://ecoroute-ai-astana.streamlit.app  ·  🏙️ **Built for:** Astana Innovations Accelerator — Ecology & Urban Environment
+🔗 **Live V2 demo:** [ecoroute-ai-baikonur.streamlit.app](https://ecoroute-ai-baikonur.streamlit.app/)  ·  🏙️ **Built for:** Astana Innovations Accelerator — Ecology & Urban Environment
 
 ![EcoRoute AI dashboard](assets/screenshots/dashboard.png)
-
-> Add a screenshot at `assets/screenshots/dashboard.png` so the dashboard shows here without anyone needing to run the app. See "Add a screenshot" below.
 
 ---
 
@@ -77,14 +75,6 @@ streamlit run app.py
 ```
 
 The repository includes the generated Baikonur world for offline deployment. Regenerate it with `python -m src.sim.world --out data/world.csv`; run the comparison with `python -m src.sim.run --days 30 --seed 42`.
-
-## Add a screenshot
-
-1. Run the app locally (`streamlit run app.py`).
-2. Take a screenshot of the dashboard.
-3. Save it as `assets/screenshots/dashboard.png` and commit it.
-
-The image at the top of this README will then display automatically.
 
 ## Project structure
 
