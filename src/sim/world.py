@@ -3,19 +3,24 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
 from src.config import (
-    BAIKONUR_BBOX,
     BASE_RATE,
     WEEKDAY_FACTOR_COMMERCIAL,
     WEEKDAY_FACTOR_RESIDENTIAL,
 )
-from src.geo.overpass import query_overpass
+from src.geo.overpass import (
+    boundary_bbox,
+    load_baikonur_boundary,
+    point_in_boundary,
+    query_overpass,
+)
 from src.optimize.distances import haversine_meters
 
 DEFAULT_SITE_COUNT = 250
@@ -45,11 +50,7 @@ out tags geom;
 
 
 def weekday_factor(area_type: str, day: int) -> float:
-    factors = (
-        WEEKDAY_FACTOR_COMMERCIAL
-        if area_type == "commercial"
-        else WEEKDAY_FACTOR_RESIDENTIAL
-    )
+    factors = WEEKDAY_FACTOR_COMMERCIAL if area_type == "commercial" else WEEKDAY_FACTOR_RESIDENTIAL
     return float(factors[day % 7])
 
 
@@ -72,9 +73,30 @@ def _nearest_name(point: tuple[float, float], named: list[tuple[float, float, st
     return min(named, key=lambda item: haversine_meters(point, (item[0], item[1])))[2]
 
 
-def _road_candidates(
-    roads: list[dict], rng: np.random.Generator
-) -> Iterable[tuple[float, float, str]]:
+def _select_sector(
+    places: list[tuple[float, float, str]],
+    elements: list[dict],
+    requested: str | None,
+) -> str:
+    """Select an explicit sector or the OSM place with the densest nearby built fabric."""
+    names = sorted({name for _, _, name in places})
+    if requested:
+        matches = [name for name in names if name.casefold() == requested.casefold()]
+        if not matches:
+            raise ValueError(f"Unknown OSM sector {requested!r}; available sectors: {', '.join(names)}")
+        return matches[0]
+    density = {name: 0 for name in names}
+    for element in elements:
+        tags = element.get("tags", {})
+        if not (tags.get("building") or tags.get("shop") or tags.get("office")):
+            continue
+        coord = _coordinate(element)
+        if coord is not None:
+            density[_nearest_name(coord, places)] += 1
+    return max(names, key=lambda name: (density[name], name))
+
+
+def _road_candidates(roads: list[dict], rng: np.random.Generator) -> Iterable[tuple[float, float, str]]:
     order = rng.permutation(len(roads))
     while True:
         emitted = False
@@ -96,9 +118,7 @@ def _road_candidates(
             return
 
 
-def _area_type(
-    point: tuple[float, float], features: list[tuple[float, float, dict]]
-) -> str:
+def _area_type(point: tuple[float, float], features: list[tuple[float, float, dict]]) -> str:
     nearby = [tags for lat, lon, tags in features if haversine_meters(point, (lat, lon)) <= 180]
     if any(tags.get("shop") or tags.get("office") or tags.get("building") == "commercial" for tags in nearby):
         return "commercial"
@@ -120,36 +140,67 @@ def _initial_last_service(fill_pct: float, daily_rate: float) -> int:
 def generate_world(
     seed: int = 42,
     n_sites: int = DEFAULT_SITE_COUNT,
-    bbox: tuple[float, float, float, float] = BAIKONUR_BBOX,
+    bbox: tuple[float, float, float, float] | None = None,
     *,
     payload: dict | None = None,
+    boundary: dict[str, Any] | None = None,
+    sector: str | None = None,
 ) -> pd.DataFrame:
-    """Generate the §2.1 site table; identical seed + OSM payload is identical."""
+    """Generate one polygon-filtered pilot sector; identical inputs are deterministic."""
     if n_sites < 1:
         raise ValueError("n_sites must be positive")
+    boundary = boundary or load_baikonur_boundary()
+    bbox = bbox or boundary_bbox(boundary)
     payload = payload or query_overpass(build_world_query(bbox))
-    elements = payload.get("elements", [])
+    elements = [
+        element
+        for element in payload.get("elements", [])
+        if (coord := _coordinate(element)) is not None and point_in_boundary(coord, boundary)
+    ]
     places: list[tuple[float, float, str]] = []
-    roads: list[dict] = []
-    waste: list[dict] = []
-    features: list[tuple[float, float, dict]] = []
     for element in elements:
         tags = element.get("tags", {})
         coord = _coordinate(element)
-        if coord is None:
-            continue
         if tags.get("place") in {"suburb", "neighbourhood"} and tags.get("name"):
             places.append((*coord, str(tags["name"])))
-        if tags.get("highway") in {"residential", "living_street"} and element.get("geometry"):
-            roads.append(element)
-        if tags.get("amenity") in {"waste_disposal", "recycling"}:
-            waste.append(element)
-        if tags.get("building") or tags.get("shop") or tags.get("office"):
-            features.append((*coord, tags))
     if not places:
-        raise ValueError("OSM response contains no real suburb/neighbourhood names")
+        raise ValueError("OSM response contains no real suburb/neighbourhood inside the polygon")
+    selected_sector = _select_sector(places, elements, sector)
+
+    def in_sector(element: dict) -> bool:
+        coord = _coordinate(element)
+        return coord is not None and _nearest_name(coord, places) == selected_sector
+
+    sector_elements = [element for element in elements if in_sector(element)]
+    roads = [
+        element
+        for element in sector_elements
+        if element.get("tags", {}).get("highway") in {"residential", "living_street"}
+        and element.get("geometry")
+    ]
+    waste = [
+        element
+        for element in sector_elements
+        if element.get("tags", {}).get("amenity") in {"waste_disposal", "recycling"}
+    ]
+    features = [
+        (*_coordinate(element), element.get("tags", {}))
+        for element in sector_elements
+        if element.get("tags", {}).get("building")
+        or element.get("tags", {}).get("shop")
+        or element.get("tags", {}).get("office")
+    ]
+    addressed = [
+        (
+            *_coordinate(element),
+            str(element.get("tags", {}).get("addr:street")),
+            str(element.get("tags", {}).get("addr:housenumber", "")),
+        )
+        for element in sector_elements
+        if element.get("tags", {}).get("addr:street")
+    ]
     if not roads and len(waste) < n_sites:
-        raise ValueError("OSM response contains no residential street geometry for site top-up")
+        raise ValueError(f"OSM sector {selected_sector!r} contains no residential street geometry for top-up")
 
     rng = np.random.default_rng(seed)
     named_roads = []
@@ -161,11 +212,9 @@ def generate_world(
     chosen: list[tuple[float, float, str, bool, dict]] = []
     for element in sorted(waste, key=lambda item: (item.get("type", ""), item.get("id", 0))):
         coord = _coordinate(element)
-        if coord and all(haversine_meters(coord, (row[0], row[1])) >= MIN_SITE_SPACING_M for row in chosen):
+        if coord:
             tags = element.get("tags", {})
             chosen.append((*coord, str(tags.get("addr:street", "")), True, tags))
-            if len(chosen) == n_sites:
-                break
 
     candidates = _road_candidates(roads, rng)
     attempts = 0
@@ -176,7 +225,11 @@ def generate_world(
         except StopIteration as exc:
             raise ValueError("Not enough OSM street geometry to generate the requested world") from exc
         point = (lat, lon)
-        if all(haversine_meters(point, (row[0], row[1])) >= MIN_SITE_SPACING_M for row in chosen):
+        if (
+            point_in_boundary(point, boundary)
+            and _nearest_name(point, places) == selected_sector
+            and all(haversine_meters(point, (row[0], row[1])) >= MIN_SITE_SPACING_M for row in chosen)
+        ):
             chosen.append((lat, lon, street, False, {}))
     if len(chosen) < n_sites:
         raise ValueError(f"Could place only {len(chosen)} sites at least {MIN_SITE_SPACING_M:.0f} m apart")
@@ -184,17 +237,19 @@ def generate_world(
     rows = []
     for number, (lat, lon, street, source_real, tags) in enumerate(chosen, start=1):
         point = (lat, lon)
-        district = _nearest_name(point, places)
+        district = selected_sector
         if tags.get("addr:street"):
             street = str(tags["addr:street"])
         if not street and named_roads:
             street = _nearest_name(point, named_roads)
-        house = tags.get("addr:housenumber")
-        address = (
-            f"ул. {street}{', ' + str(house) if house else ''}, район {district}"
-            if street
-            else district
-        )
+        house = str(tags.get("addr:housenumber", ""))
+        if addressed and not tags.get("addr:street"):
+            _, _, nearest_street, nearest_house = min(
+                addressed,
+                key=lambda item: haversine_meters(point, (item[0], item[1])),
+            )
+            street, house = nearest_street, nearest_house
+        address = f"ул. {street}{', ' + house if house else ''}, район {district}" if street else district
         area = _area_type(point, features)
         containers = int(rng.integers(1, 7))
         container_liters = int(rng.choice(CAPACITY_OPTIONS, p=[0.08, 0.17, 0.30, 0.45]))
@@ -209,6 +264,7 @@ def generate_world(
                 "lon": round(lon, 6),
                 "address": address,
                 "district": district,
+                "sector": selected_sector,
                 "containers": containers,
                 "container_liters": container_liters,
                 "capacity_liters": capacity,
@@ -227,12 +283,16 @@ def _main() -> None:
     parser.add_argument("--out", type=Path, default=Path("data/world.csv"))
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--sites", type=int, default=DEFAULT_SITE_COUNT)
+    parser.add_argument("--sector", help="Exact OSM suburb/neighbourhood name")
     args = parser.parse_args()
-    world = generate_world(seed=args.seed, n_sites=args.sites)
+    world = generate_world(seed=args.seed, n_sites=args.sites, sector=args.sector)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     world.to_csv(args.out, index=False)
     real = int(world["source_real"].sum())
-    print(f"Wrote {len(world)} sites to {args.out}: {real} real OSM, {len(world) - real} synthesized")
+    print(
+        f"Wrote {len(world)} sites in sector {world.iloc[0]['sector']} to {args.out}: "
+        f"{real} real OSM, {len(world) - real} synthesized"
+    )
 
 
 if __name__ == "__main__":

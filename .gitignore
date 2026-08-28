@@ -14,7 +14,8 @@ venv/
 data/cache/*
 !data/cache/osm/
 data/cache/osm/*
-!data/cache/osm/overpass_ee673ca7af22f213a27c.json.gz
+!data/cache/osm/baikonur_boundary.geojson
+!data/cache/osm/overpass_efc94045afd61e19c304.json.gz
 .claude/settings.local.json
 outputs/
 data/photos/*

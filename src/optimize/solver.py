@@ -88,6 +88,8 @@ class Route:
     dump_stops: int = 0
     ordered_stops: list[str] = field(default_factory=list)
     max_segment_load_kg: float = 0.0
+    cumulative_distance_m: list[float] = field(default_factory=list)
+    end_load_kg: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -200,8 +202,7 @@ def _preflight_violations(
             )
     if must_load > fleet_capacity:
         violations.append(
-            f"Must-serve load of {must_load:.0f} kg exceeds total fleet capacity "
-            f"of {fleet_capacity:.0f} kg."
+            f"Must-serve load of {must_load:.0f} kg exceeds total fleet capacity of {fleet_capacity:.0f} kg."
         )
     return violations
 
@@ -240,8 +241,10 @@ def plan_routes(sites_df: pd.DataFrame, trucks: Sequence[Truck], params: SolverP
     solution, manager, routing = _solve(sites, loads, must_serve, trucks, matrix, params)
     if solution is None:
         return _empty_plan(
-            ["Solver found no feasible plan for the must-serve sites with this fleet "
-             "and shift length. Add a truck, raise capacity, or extend the shift."],
+            [
+                "Solver found no feasible plan for the must-serve sites with this fleet "
+                "and shift length. Add a truck, raise capacity, or extend the shift."
+            ],
             matrix,
         )
     return _extract_plan(solution, manager, routing, site_ids, loads, trucks, matrix, params)
@@ -260,7 +263,9 @@ def _v2_frame(sites_df: pd.DataFrame) -> pd.DataFrame:
     for source, target in aliases.items():
         if target not in sites.columns and source in sites.columns:
             sites[target] = sites[source]
-    missing = [name for name in ("_site_id", "_lat", "_lon", "capacity_liters", "fill_pct") if name not in sites]
+    missing = [
+        name for name in ("_site_id", "_lat", "_lon", "capacity_liters", "fill_pct") if name not in sites
+    ]
     if missing:
         raise ValueError(f"V2 sites are missing required columns: {missing}")
     if "klass" not in sites:
@@ -332,7 +337,7 @@ def _preflight_v2(
 ) -> list[str]:
     violations: list[str] = []
     max_capacity = max(truck.capacity_kg for truck in trucks)
-    total_capacity = sum(truck.capacity_kg for truck in trucks) * (params.max_dump_trips + 1)
+    total_capacity = sum(truck.capacity_kg for truck in trucks) * params.max_dump_trips
     red_load = sum(loads[node - 1] for node in red_nodes)
     if red_load > total_capacity + 1e-9:
         violations.append(
@@ -346,23 +351,25 @@ def _preflight_v2(
                 f"Площадка {site_id}: загрузка {loads[node - 1]:.0f} кг больше вместимости "
                 f"крупнейшей машины {max_capacity:.0f} кг."
             )
-        reachable = any(
+        landfill_node = len(sites) + 1
+        reachable = params.max_dump_trips > 0 and any(
             matrix.seconds[0][node]
             + _truck_service(truck, params)
-            + matrix.seconds[node][0]
+            + matrix.seconds[node][landfill_node]
+            + params.landfill_service_s
+            + matrix.seconds[landfill_node][0]
             <= _truck_shift(truck, params)
             for truck in trucks
         )
         if not reachable:
             violations.append(
-                f"Площадка {site_id} недостижима в пределах смены; увеличьте смену или смените депо."
+                f"Площадка {site_id}: полигон недостижим после вывоза в пределах смены; "
+                "увеличьте смену, добавьте рейс или смените полигон."
             )
     return violations
 
 
-def _v2_empty_plan(
-    violations: list[str], matrix: DistanceMatrix, unserved_red: list[str], mode: str
-) -> Plan:
+def _v2_empty_plan(violations: list[str], matrix: DistanceMatrix, unserved_red: list[str], mode: str) -> Plan:
     return Plan(
         routes=[],
         violations=violations,
@@ -383,9 +390,7 @@ def _plan_v2(sites_df: pd.DataFrame, trucks: Sequence[Truck], params: SolverPara
         raise ValueError("every truck needs a positive capacity_kg")
     sites = _v2_frame(sites_df)
     loads, volumes = _v2_loads_and_volumes(sites)
-    points = [params.depot] + [
-        (float(lat), float(lon)) for lat, lon in zip(sites["_lat"], sites["_lon"])
-    ]
+    points = [params.depot] + [(float(lat), float(lon)) for lat, lon in zip(sites["_lat"], sites["_lon"])]
     landfill = params.landfill or params.depot
     points.append(landfill)
     landfill_node = len(points) - 1
@@ -422,9 +427,7 @@ def _plan_v2(sites_df: pd.DataFrame, trucks: Sequence[Truck], params: SolverPara
     red_routes, red_paths, red_served = _extract_v2_solution(
         *pass_one, sites, loads, trucks, matrix, params, landfill_node
     )
-    missing_red = [
-        str(sites.iloc[node - 1]["_site_id"]) for node in red_nodes if node not in red_served
-    ]
+    missing_red = [str(sites.iloc[node - 1]["_site_id"]) for node in red_nodes if node not in red_served]
     if missing_red:
         return _v2_empty_plan(
             [f"Обязательные площадки не обслужены: {', '.join(missing_red)}."],
@@ -434,9 +437,7 @@ def _plan_v2(sites_df: pd.DataFrame, trucks: Sequence[Truck], params: SolverPara
         )
     red_volume = sum(volumes[node - 1] for node in red_nodes)
     red_distance = sum(route.distance_m for route in red_routes)
-    reference_cost = (
-        red_distance / red_volume if red_volume > 1e-12 else params.fallback_cost_per_m3_m
-    )
+    reference_cost = red_distance / red_volume if red_volume > 1e-12 else params.fallback_cost_per_m3_m
     if params.reds_only or not yellow_nodes:
         return Plan(
             routes=red_routes,
@@ -451,10 +452,7 @@ def _plan_v2(sites_df: pd.DataFrame, trucks: Sequence[Truck], params: SolverPara
             mode=mode,
         )
 
-    penalties = {
-        node: volumes[node - 1] * reference_cost * params.yellow_tolerance
-        for node in yellow_nodes
-    }
+    penalties = {node: volumes[node - 1] * reference_cost * params.yellow_tolerance for node in yellow_nodes}
     pass_two = _solve_v2_ortools(sites, loads, trucks, matrix, params, penalties)
     if pass_two is None:
         return _v2_empty_plan(
@@ -466,9 +464,7 @@ def _plan_v2(sites_df: pd.DataFrame, trucks: Sequence[Truck], params: SolverPara
     routes, paths, served_nodes = _extract_v2_solution(
         *pass_two, sites, loads, trucks, matrix, params, landfill_node
     )
-    missing_red = [
-        str(sites.iloc[node - 1]["_site_id"]) for node in red_nodes if node not in served_nodes
-    ]
+    missing_red = [str(sites.iloc[node - 1]["_site_id"]) for node in red_nodes if node not in served_nodes]
     if missing_red:
         return _v2_empty_plan(
             [f"Обязательные площадки не обслужены: {', '.join(missing_red)}."],
@@ -476,9 +472,7 @@ def _plan_v2(sites_df: pd.DataFrame, trucks: Sequence[Truck], params: SolverPara
             missing_red,
             mode,
         )
-    served_yellow = [
-        str(sites.iloc[node - 1]["_site_id"]) for node in yellow_nodes if node in served_nodes
-    ]
+    served_yellow = [str(sites.iloc[node - 1]["_site_id"]) for node in yellow_nodes if node in served_nodes]
     skipped_yellow: list[YellowDecision] = []
     for node in yellow_nodes:
         if node in served_nodes:
@@ -538,9 +532,7 @@ def _solve_v2_ortools(
         from_node = manager.IndexToNode(from_index)
         a = node_to_matrix[from_node]
         b = node_to_matrix[manager.IndexToNode(to_index)]
-        dump_service_equivalent = (
-            ceil(params.landfill_service_s * 25.0 / 3.6) if from_node > n_sites else 0
-        )
+        dump_service_equivalent = ceil(params.landfill_service_s * 25.0 / 3.6) if from_node > n_sites else 0
         return meters_int[a][b] + dump_service_equivalent
 
     distance_index = routing.RegisterTransitCallback(distance_cb)
@@ -564,6 +556,8 @@ def _solve_v2_ortools(
         index = manager.NodeToIndex(node)
         if index >= 0:
             routing.solver().Add(load_dimension.SlackVar(index) == 0)
+    for vehicle in range(len(trucks)):
+        load_dimension.CumulVar(routing.End(vehicle)).SetValue(0)
 
     def dump_count_cb(from_index: int) -> int:
         return int(manager.IndexToNode(from_index) > n_sites)
@@ -596,9 +590,7 @@ def _solve_v2_ortools(
     )
     time_dimension = routing.GetDimensionOrDie("Time")
     for vehicle, truck in enumerate(trucks):
-        time_dimension.CumulVar(routing.End(vehicle)).SetMax(
-            floor(_truck_shift(truck, params))
-        )
+        time_dimension.CumulVar(routing.End(vehicle)).SetMax(floor(_truck_shift(truck, params)))
 
     for node, penalty in yellow_penalties.items():
         index = manager.NodeToIndex(node)
@@ -611,9 +603,7 @@ def _solve_v2_ortools(
         routing.AddDisjunction([index], 0)
 
     search = pywrapcp.DefaultRoutingSearchParameters()
-    search.first_solution_strategy = (
-        routing_enums_pb2.FirstSolutionStrategy.PARALLEL_CHEAPEST_INSERTION
-    )
+    search.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PARALLEL_CHEAPEST_INSERTION
     search.local_search_metaheuristic = routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
     search.time_limit.FromMilliseconds(max(50, int(params.time_limit_s * 1000)))
     solution = routing.SolveWithParameters(search)
@@ -638,6 +628,7 @@ def _extract_v2_solution(
     paths: list[list[int]] = []
     served: set[int] = set()
     n_sites = len(sites)
+    load_dimension = routing.GetDimensionOrDie("Load")
     for vehicle, truck in enumerate(trucks):
         routing_nodes = [0]
         index = routing.Start(vehicle)
@@ -646,16 +637,17 @@ def _extract_v2_solution(
             routing_nodes.append(manager.IndexToNode(index) if not routing.IsEnd(index) else 0)
         if len(routing_nodes) == 2:
             continue
-        path = [
-            node if 1 <= node <= n_sites else landfill_node
-            for node in routing_nodes
-        ]
+        path = [node if 1 <= node <= n_sites else landfill_node for node in routing_nodes]
         path[0] = path[-1] = 0
         site_nodes = [node for node in routing_nodes[1:-1] if 1 <= node <= n_sites]
         served.update(site_nodes)
         distance, duration, total_load, dumps, max_segment = _v2_metrics(
             path, loads, matrix, truck, params, landfill_node
         )
+        cumulative = [0.0]
+        for before, after in zip(path[:-1], path[1:]):
+            cumulative.append(cumulative[-1] + matrix.meters[before][after])
+        end_load = float(solution.Value(load_dimension.CumulVar(routing.End(vehicle))))
         paths.append(path)
         routes.append(
             Route(
@@ -666,12 +658,12 @@ def _extract_v2_solution(
                 distance_m=distance,
                 dump_stops=dumps,
                 ordered_stops=[
-                    "LANDFILL"
-                    if node > n_sites
-                    else str(sites.iloc[node - 1]["_site_id"])
+                    "LANDFILL" if node > n_sites else str(sites.iloc[node - 1]["_site_id"])
                     for node in routing_nodes[1:-1]
                 ],
                 max_segment_load_kg=max_segment,
+                cumulative_distance_m=cumulative,
+                end_load_kg=end_load,
             )
         )
     return routes, paths, served
@@ -696,8 +688,7 @@ def _solve(
     capacities_int = [floor(truck.capacity_kg) for truck in trucks]
     service_int = ceil(params.service_time_s)
     time_int = [
-        [ceil(value) + (service_int if i > 0 else 0) for value in row]
-        for i, row in enumerate(matrix.seconds)
+        [ceil(value) + (service_int if i > 0 else 0) for value in row] for i, row in enumerate(matrix.seconds)
     ]
 
     def distance_cb(from_index: int, to_index: int) -> int:
@@ -729,9 +720,7 @@ def _solve(
     # Insertion-based construction: unlike PATH_CHEAPEST_ARC it reliably finds
     # a first solution when demand far exceeds capacity and most optional
     # sites must be dropped.
-    search.first_solution_strategy = (
-        routing_enums_pb2.FirstSolutionStrategy.PARALLEL_CHEAPEST_INSERTION
-    )
+    search.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PARALLEL_CHEAPEST_INSERTION
     search.local_search_metaheuristic = routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
     search.time_limit.FromMilliseconds(int(params.time_limit_s * 1000))
 
@@ -765,10 +754,9 @@ def _extract_plan(
         served.update(stop_nodes)
         load_kg = sum(loads[node - 1] for node in stop_nodes)
         distance_m = sum(matrix.meters[a][b] for a, b in zip(node_path[:-1], node_path[1:]))
-        duration_s = (
-            sum(matrix.seconds[a][b] for a, b in zip(node_path[:-1], node_path[1:]))
-            + params.service_time_s * len(stop_nodes)
-        )
+        duration_s = sum(
+            matrix.seconds[a][b] for a, b in zip(node_path[:-1], node_path[1:])
+        ) + params.service_time_s * len(stop_nodes)
         routes.append(
             Route(
                 truck_id=truck.truck_id,

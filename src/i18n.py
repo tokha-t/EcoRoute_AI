@@ -41,6 +41,7 @@ TRANSLATIONS = {
         "ru": "Координаты: {real} реальных OSM, {synthetic} синтезировано на реальных улицах.",
         "en": "Coordinates: {real} real OSM, {synthetic} synthesized on real streets.",
     },
+    "sector": {"ru": "сектор", "en": "sector"},
     "infeasible": {"ru": "План невыполним", "en": "Plan is infeasible"},
     "fix": {
         "ru": "Решение: добавьте машину, увеличьте смену/вместимость или снизьте порог.",
@@ -49,6 +50,25 @@ TRANSLATIONS = {
     "comparison": {"ru": "Сравнение политик за 30 дней", "en": "30-day policy comparison"},
     "download_report": {"ru": "Скачать отчёт Markdown", "en": "Download Markdown report"},
     "download_csv": {"ru": "Скачать суточные KPI CSV", "en": "Download daily KPI CSV"},
+    "download_sweep": {"ru": "Скачать sweep CSV", "en": "Download sweep CSV"},
+    "download_route_csv": {"ru": "Маршрутный лист CSV", "en": "Route sheet CSV"},
+    "download_route_html": {
+        "ru": "Печатный маршрутный лист",
+        "en": "Printable route sheet",
+    },
+    "selected_tolerance": {"ru": "Выбранный tolerance", "en": "Selected tolerance"},
+    "selection_dominates": {
+        "ru": "Это максимальное проверенное значение, которое лучше фиксированного графика и по пробегу, и по переполнениям.",
+        "en": "This is the largest tested value below fixed on both total distance and overflow events.",
+    },
+    "selection_fallback": {
+        "ru": "Ни одно проверенное значение не лучше фиксированного графика по обоим показателям; выбран минимум пробега.",
+        "en": "No tested value beats fixed on both measures; the distance-minimising fallback is selected.",
+    },
+    "frontier": {
+        "ru": "Компромисс: пробег и переполнения",
+        "en": "Trade-off: distance and overflow",
+    },
 }
 
 

@@ -2,7 +2,7 @@
 
 **Predictive waste collection & route optimization for smart cities.**
 
-EcoRoute AI simulates how quickly collection sites fill, classifies mandatory and opportunistic stops, and builds capacity- and shift-safe truck routes with landfill dump trips. Built on real Baikonur-district coordinates in Astana.
+EcoRoute AI simulates how quickly collection sites fill, classifies mandatory and opportunistic stops, and builds capacity- and shift-safe truck routes with landfill dump trips. The current pilot world covers the OSM sector `Өндіріс` inside Astana's multi-part Baikonur district boundary.
 
 🔗 **Live V2 demo:** [ecoroute-ai-baikonur.streamlit.app](https://ecoroute-ai-baikonur.streamlit.app/)  ·  🏙️ **Built for:** Astana Innovations Accelerator — Ecology & Urban Environment
 
@@ -29,33 +29,36 @@ A dispatcher sees the full plan on one map before the shift, tunes how aggressiv
 
 | Metric | Value |
 |---|---|
-| World | 250 sites in Baikonur district |
-| Coordinate provenance | 74 real OSM waste records + 176 sites snapped to real streets |
+| World | 250 sites in `Өндіріс`, the densest selected Baikonur pilot sector |
+| Coordinate provenance | 13 real OSM waste records + 237 sites generated on real streets; all inside the OSM administrative polygon |
 | Predictive max-interval violations | 0 |
-| Predictive overflow events vs fixed | 199 vs 298 (-33.2%) |
+| Predictive overflow events vs fixed | 171 vs 237 (-27.8%) |
+| Automatically selected YELLOW tolerance | 0.0 (largest tested value improving both distance and overflow) |
 
 Policy comparison (same four-truck fleet and accumulation sequence):
 
 | Policy | Distance | Overflow events | Max-interval violations |
 |---|---:|---:|---:|
-| Fixed | 5,273 km | 298 | 24 |
-| Predictive RED + YELLOW | 5,806 km | 199 | 0 |
-| Predictive RED only (analysis) | 3,964 km | 242 | 0 |
+| Fixed | 6,166 km | 237 | 50 |
+| Predictive, selected tolerance 0.0 | 5,220 km | 171 | 0 |
+| Predictive, tolerance 0.25 | 6,503 km | 124 | 0 |
 
-> Every KPI above is **simulated**. The run demonstrates policy behavior on real coordinates; it does not estimate measured Astana savings. The default RED+YELLOW policy trades 10.1% more distance than fixed for 33.2% fewer overflow events in this generated world, while RED-only is an analysis mode—not the operating default.
+> Every KPI above is **simulated**. The run demonstrates policy behavior on real OSM geometry; it does not estimate measured Astana savings. The required seven-point sweep selected tolerance 0.0 because it is the largest tested value improving both headline measures: 15.3% less distance and 27.8% fewer overflow events than fixed. The full report keeps the service-quality trade-off visible instead of hiding it behind one savings figure.
 
 ## Key features
 
-- Deterministic 250-site world generated on cached OSM streets and real district names
+- Authoritative cached multi-part OSM district boundary, including detached polygons; no bbox fallback
+- Deterministic 250-site pilot world in the densest OSM sector, with every site polygon-validated
 - Exact RED/YELLOW/GREEN classification with max-interval precedence
 - Two-pass OR-Tools routing with explainable, volume-scaled YELLOW penalties
-- Repeatable landfill dump visits with capacity and shift enforcement
+- Repeatable landfill dump visits, mandatory empty return, capacity, and shift enforcement
 - RU/EN interactive map and per-truck route panels with an OSRM-offline fallback
-- Downloadable 30-day Markdown report and daily KPI CSV
+- Printable RU/EN route sheets with the final landfill leg and skipped-YELLOW explanations
+- Downloadable 30-day report, daily KPI CSV, and full tolerance frontier table/chart
 
 ## Data
 
-Real municipal fill history is not available yet, so accumulation and initial fill are synthetic. Coordinates, street geometry, addresses where tagged, and district names come from OpenStreetMap. The generated snapshot records coordinate provenance per site.
+Real municipal fill history is not available yet, so accumulation and initial fill are synthetic. The district polygon, sector name, street geometry, mapped waste sites, and addresses where tagged come from OpenStreetMap. Additional site coordinates are synthesized along those real streets, kept at least 60 m apart, and rejected unless they lie inside the authoritative polygon. The generated snapshot records coordinate provenance per site.
 
 ## Tech stack
 
@@ -83,9 +86,10 @@ ecoroute-ai/
 ├── app.py               # Streamlit dashboard
 ├── src/                 # data generation, model, prediction, routing, savings, maps
 │   ├── sim/             # V2 world, fill rules, and 30-day engine
-│   └── geo/             # cached Overpass client
+│   ├── reports/         # printable dispatcher route sheets
+│   └── geo/             # cached Overpass client + real boundary parser
 ├── data/                # generated demo data (csv)
-├── reports/             # generated 30-day Markdown + daily KPI CSV
+├── reports/             # 30-day KPIs + tolerance frontier table/chart
 ├── models/              # trained model + metrics
 ├── tests/               # core-logic tests
 └── assets/screenshots/  # dashboard image(s)

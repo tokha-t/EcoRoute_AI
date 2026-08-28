@@ -3,9 +3,16 @@ from __future__ import annotations
 from pathlib import Path
 
 from src.optimize.distances import DistanceMatrix
-from src.sim.run import POLICIES, run_comparison, write_comparison_report
+from src.sim.run import (
+    POLICIES,
+    run_comparison,
+    run_full_analysis,
+    select_yellow_tolerance,
+    summarize,
+    write_comparison_report,
+)
 from src.sim.world import generate_world
-from tests.test_sim_world import mock_osm_payload
+from tests.test_sim_world import mock_boundary, mock_osm_payload
 
 
 def matrix_for_world(world) -> DistanceMatrix:
@@ -21,7 +28,12 @@ def matrix_for_world(world) -> DistanceMatrix:
 
 
 def test_short_comparison_and_report_safety_kpis(tmp_path: Path, monkeypatch) -> None:
-    world = generate_world(seed=3, n_sites=30, payload=mock_osm_payload())
+    world = generate_world(
+        seed=3,
+        n_sites=30,
+        payload=mock_osm_payload(),
+        boundary=mock_boundary(),
+    )
     matrix = matrix_for_world(world)
     monkeypatch.setattr("src.sim.run.get_matrix", lambda *args, **kwargs: matrix)
     results = run_comparison(world, days=4, seed=9)
@@ -41,3 +53,36 @@ def test_short_comparison_and_report_safety_kpis(tmp_path: Path, monkeypatch) ->
     assert "max_interval_violations" in text
     assert "SIMULATED DATA" in text
     assert csv.exists()
+
+
+def test_tolerance_sweep_report_and_selection_are_reproducible(tmp_path: Path, monkeypatch) -> None:
+    world = generate_world(
+        seed=4,
+        n_sites=18,
+        payload=mock_osm_payload(),
+        boundary=mock_boundary(),
+    )
+    matrix = matrix_for_world(world)
+    monkeypatch.setattr("src.sim.run.get_matrix", lambda *args, **kwargs: matrix)
+    results, sweep, selection = run_full_analysis(world, days=2, seed=11)
+    assert selection == select_yellow_tolerance(sweep, summarize(results["fixed"], len(world)))
+    markdown = tmp_path / "simulation.md"
+    csv = tmp_path / "simulation.csv"
+    sweep_csv = tmp_path / "sweep.csv"
+    sweep_svg = tmp_path / "frontier.svg"
+    write_comparison_report(
+        world,
+        results,
+        markdown,
+        csv,
+        sweep_summaries=sweep,
+        selection=selection,
+        sweep_csv_path=sweep_csv,
+        sweep_svg_path=sweep_svg,
+    )
+    text = markdown.read_text(encoding="utf-8")
+    assert "YELLOW_TOLERANCE trade-off sweep" in text
+    assert "Selected default" in text
+    assert selection.reason in text
+    assert sweep_csv.exists()
+    assert sweep_svg.exists()

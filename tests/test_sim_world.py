@@ -5,6 +5,27 @@ import pandas as pd
 from src.sim.world import generate_world
 
 
+def mock_boundary() -> dict:
+    return {
+        "type": "Feature",
+        "properties": {"name": "Test district"},
+        "geometry": {
+            "type": "MultiPolygon",
+            "coordinates": [
+                [
+                    [
+                        [71.30, 51.10],
+                        [71.50, 51.10],
+                        [71.50, 51.25],
+                        [71.30, 51.25],
+                        [71.30, 51.10],
+                    ]
+                ]
+            ],
+        },
+    }
+
+
 def mock_osm_payload() -> dict:
     elements: list[dict] = [
         {
@@ -36,22 +57,30 @@ def mock_osm_payload() -> dict:
                 "type": "way",
                 "id": 100 + index,
                 "tags": {"highway": "residential", "name": f"OSM-{index}"},
-                "geometry": [
-                    {"lat": lat, "lon": 71.345 + step * 0.006}
-                    for step in range(21)
-                ],
+                "geometry": [{"lat": lat, "lon": 71.345 + step * 0.006} for step in range(21)],
             }
         )
     return {"elements": elements}
 
 
 def test_world_contract_and_determinism() -> None:
-    first = generate_world(seed=7, n_sites=210, payload=mock_osm_payload())
-    second = generate_world(seed=7, n_sites=210, payload=mock_osm_payload())
+    first = generate_world(
+        seed=7,
+        n_sites=210,
+        payload=mock_osm_payload(),
+        boundary=mock_boundary(),
+    )
+    second = generate_world(
+        seed=7,
+        n_sites=210,
+        payload=mock_osm_payload(),
+        boundary=mock_boundary(),
+    )
 
     pd.testing.assert_frame_equal(first, second)
     assert len(first) >= 200
     assert set(first["district"]) == {"Жастар"}
+    assert set(first["sector"]) == {"Жастар"}
     assert first["source_real"].sum() == 1
     assert (first["capacity_liters"] == first["containers"] * first["container_liters"]).all()
     assert first["daily_fill_rate_pct"].between(3, 95).all()

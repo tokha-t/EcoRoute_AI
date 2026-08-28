@@ -1,4 +1,4 @@
-"""Shared tunable constants for EcoRoute AI (SPEC_V1).
+"""Shared tunable constants for EcoRoute AI.
 
 Single home for the cross-module tunables so a value is set in exactly one
 place instead of drifting between modules. The original modules re-import these
@@ -34,9 +34,9 @@ CONFIDENCE_THRESHOLD = 0.6  # below this, a photo goes to the manual-check list
 MAX_INTERVAL_DAYS = 3
 
 # --- V2 predictive collection simulation --------------------------------
-# Real operational values must replace these simulation defaults during the
-# pilot. Coordinates are inside Astana's Baikonur district.
-BAIKONUR_BBOX = (51.13, 71.34, 51.22, 71.47)  # south, west, north, east
+# Query envelope of the authoritative multi-part OSM relation. It may narrow
+# remote requests but must never be used as the district boundary.
+BAIKONUR_BBOX = (51.1475427, 71.2980936, 51.3511101, 71.7063332)
 DEPOT_COORDS = (51.1735, 71.4010)
 LANDFILL_COORDS = (51.1160, 71.3570)
 
@@ -47,7 +47,9 @@ PLANNING_HORIZON_DAYS = 1
 
 LANDFILL_SERVICE_SECONDS = 900.0
 MAX_DUMP_TRIPS = 4
-YELLOW_TOLERANCE = 1.0
+# Selected reproducibly by the seven-point 30-day frontier sweep: 0.0 is the
+# largest tested value beating fixed scheduling on both km and overflow events.
+YELLOW_TOLERANCE = 0.0
 FALLBACK_COST_PER_M3_M = 1_200.0
 SIMULATION_DAYS = 30
 

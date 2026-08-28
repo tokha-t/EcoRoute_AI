@@ -438,6 +438,59 @@ Do NOT add new dependencies beyond what is already in requirements.txt.
 Verify: pytest green; map renders with OSRM stopped; screenshot the 3 policy views.
 ```
 
+### S6 — Corrections round: empty return, real district polygon, tolerance sweep
+
+Three defects found by review of the first V2 build. Run as ONE session, in this order.
+Re-read docs/SPEC_V2_SIMULATION.md §3.1–3.2, §5.2, §6.1 — they were updated 2026-08-28.
+
+```text
+1. EMPTY RETURN TO DEPOT (domain bug — trucks currently return to the depot loaded).
+   In src/optimize/solver.py constrain the load dimension so CumulVar(End(vehicle)) == 0
+   for every vehicle. A truck that collected anything must therefore visit the landfill
+   after its last collection stop, before the depot. Trucks that collect nothing stay empty
+   and need no landfill visit.
+   - Surface the final landfill leg in the Plan (it must appear in route stop order),
+     in the route sheet, and on the map.
+   - Tests: every vehicle ends with zero load; a one-site route contains a landfill stop
+     immediately before the depot return; multi-dump routes still respect capacity between
+     dumps; infeasibility (landfill unreachable within shift) returns a named report.
+
+2. REAL DISTRICT POLYGON (the bbox in config is wrong — it covers the old city centre,
+   not Baikonur district, which is the northern/north-eastern area plus a 460 ha exclave).
+   - src/geo/overpass.py: fetch relation["boundary"="administrative"] named
+     Байқоңыр|Байконур inside Astana; build a MULTI-part polygon (keep the exclave);
+     cache to data/cache/osm/baikonur_boundary.geojson.
+   - src/sim/world.py: filter every generated site by point-in-polygon against it.
+     Use a bbox only to narrow the Overpass query, never as the boundary.
+   - If the relation is unavailable and no cache exists: raise a clear error. Do NOT
+     fall back to a bbox and do NOT invent coordinates.
+   - Add --sector <name> to restrict generation to one place=suburb|neighbourhood inside
+     the district; default to the densest. The UI must state which sector is displayed.
+   - Point-in-polygon with a small pure helper (ray casting) — no new dependency;
+     shapely only if it is already installed.
+   - Tests: a point in the city centre is rejected; a point in the exclave is accepted;
+     cached-polygon path works offline; missing polygon raises, never silently degrades.
+
+3. YELLOW_TOLERANCE SWEEP (§6.1). The current default of 1.0 makes predictive drive 9.9%
+   MORE than the fixed baseline — it collects nearly everything. Do not hand-tune it.
+   - src/sim/run.py: sweep tolerance over {0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0}, recording
+     the full KPI set for each.
+   - Report a trade-off table (km_total vs overflow_events per tolerance) and pick the
+     default automatically: the largest tolerance beating `fixed` on BOTH km_total and
+     overflow_events. If none does, state that plainly in the report and default to the
+     km-minimising value.
+   - Write the chosen value into src/config.py as YELLOW_TOLERANCE and record the reason
+     in the report.
+   - Test: the report contains the sweep table and the selection rationale; the chosen
+     default is reproducible from the recorded KPIs.
+
+After all three: regenerate reports/simulation_30d.* — every earlier number is invalid
+because routes were missing their final landfill leg.
+
+Verify: python -m pytest tests/ -q green; ruff check . clean; report regenerated and its
+headline no longer shows predictive losing to fixed on km without explanation.
+```
+
 ---
 
 ## Extras (only when needed)

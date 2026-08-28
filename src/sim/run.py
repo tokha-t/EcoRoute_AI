@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Literal, Sequence
 
@@ -39,6 +39,9 @@ FIXED_INTERVAL_DAYS = {"multistorey": 1, "private": 3, "commercial": 1, "mixed":
 REPORT_DIR = Path(__file__).resolve().parents[2] / "reports"
 DEFAULT_REPORT_MD = REPORT_DIR / "simulation_30d.md"
 DEFAULT_REPORT_CSV = REPORT_DIR / "simulation_30d.csv"
+DEFAULT_SWEEP_CSV = REPORT_DIR / "yellow_tolerance_sweep.csv"
+DEFAULT_SWEEP_SVG = REPORT_DIR / "yellow_tolerance_frontier.svg"
+TOLERANCE_SWEEP = (0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0)
 
 
 @dataclass(frozen=True)
@@ -61,19 +64,24 @@ class DailyRecord:
     valid_plan: bool
 
 
+@dataclass(frozen=True)
+class SweepSelection:
+    tolerance: float
+    dominates_fixed: bool
+    reason: str
+
+
 def default_trucks(count: int = 4, capacity_kg: float = 5_000.0) -> list[Truck]:
     return [Truck(f"TRUCK-{index + 1}", capacity_kg=capacity_kg) for index in range(count)]
 
 
 def _world_points(world: pd.DataFrame) -> list[tuple[float, float]]:
-    return [DEPOT_COORDS] + list(zip(world["lat"].astype(float), world["lon"].astype(float))) + [
-        LANDFILL_COORDS
-    ]
+    return (
+        [DEPOT_COORDS] + list(zip(world["lat"].astype(float), world["lon"].astype(float))) + [LANDFILL_COORDS]
+    )
 
 
-def _subset_matrix(
-    full: DistanceMatrix, world_indices: Sequence[int], world_size: int
-) -> DistanceMatrix:
+def _subset_matrix(full: DistanceMatrix, world_indices: Sequence[int], world_size: int) -> DistanceMatrix:
     indices = [0] + [int(index) + 1 for index in world_indices] + [world_size + 1]
     return DistanceMatrix(
         seconds=[[full.seconds[i][j] for j in indices] for i in indices],
@@ -146,10 +154,14 @@ def _naive_plan(
         served_nodes: list[int] = []
         for node in nodes:
             load = loads[node - 1]
-            if load > truck.capacity_kg or dumps > params.max_dump_trips:
+            if load > truck.capacity_kg:
                 unserved.append(str(ordered.iloc[node - 1]["site_id"]))
                 continue
             if current_load + load > truck.capacity_kg:
+                # Keep one landfill visit available for the mandatory final unload.
+                if dumps + 1 >= params.max_dump_trips:
+                    unserved.append(str(ordered.iloc[node - 1]["site_id"]))
+                    continue
                 path.append(landfill_node)
                 dumps += 1
                 current_load = 0.0
@@ -157,6 +169,11 @@ def _naive_plan(
             served_nodes.append(node)
             current_load += load
             max_segment = max(max_segment, current_load)
+        if not served_nodes:
+            continue
+        path.append(landfill_node)
+        dumps += 1
+        current_load = 0.0
         path.append(0)
         distance = sum(local.meters[a][b] for a, b in zip(path[:-1], path[1:]))
         duration = sum(local.seconds[a][b] for a, b in zip(path[:-1], path[1:]))
@@ -174,6 +191,10 @@ def _naive_plan(
                     for node in path[1:-1]
                 ],
                 max_segment_load_kg=max_segment,
+                cumulative_distance_m=list(
+                    np.cumsum([0.0] + [local.meters[a][b] for a, b in zip(path[:-1], path[1:])])
+                ),
+                end_load_kg=current_load,
             )
         )
     violations = [f"Не обслужены обязательные площадки: {', '.join(unserved)}"] if unserved else []
@@ -199,11 +220,7 @@ def _daily_record(
 ) -> DailyRecord:
     served_ids = [site_id for route in plan.routes for site_id in route.site_ids]
     served = before_service[before_service["site_id"].astype(str).isin(set(served_ids))]
-    liters = (
-        served["capacity_liters"].astype(float)
-        * served["fill_pct"].astype(float).clip(0, 100)
-        / 100
-    )
+    liters = served["capacity_liters"].astype(float) * served["fill_pct"].astype(float).clip(0, 100) / 100
     tonnes = float(liters.sum() * DENSITY_KG_PER_L / 1000)
     km = plan.total_distance_m / 1000
     overflow = int((before_service["fill_pct"] > 100).sum())
@@ -293,8 +310,7 @@ def summarize(records: Sequence[DailyRecord], site_count: int) -> dict[str, floa
         "overflow_events": float(overflow),
         "overflow_site_days": overflow / max(site_count * days, 1) * 1000,
         "mean_fill_at_pickup": (
-            sum(record.mean_fill_at_pickup * record.sites_served for record in records)
-            / total_served
+            sum(record.mean_fill_at_pickup * record.sites_served for record in records) / total_served
             if total_served
             else 0.0
         ),
@@ -307,11 +323,169 @@ def summarize(records: Sequence[DailyRecord], site_count: int) -> dict[str, floa
     }
 
 
+def select_yellow_tolerance(
+    sweep_summaries: dict[float, dict[str, float]],
+    fixed_summary: dict[str, float],
+) -> SweepSelection:
+    """Select the largest tolerance strictly improving fixed km and overflow."""
+    dominating = [
+        tolerance
+        for tolerance, summary in sweep_summaries.items()
+        if summary["km_total"] < fixed_summary["km_total"]
+        and summary["overflow_events"] < fixed_summary["overflow_events"]
+    ]
+    if dominating:
+        chosen = max(dominating)
+        return SweepSelection(
+            tolerance=chosen,
+            dominates_fixed=True,
+            reason=(
+                f"{chosen:g} is the largest tested tolerance below fixed on both "
+                "total distance and overflow events."
+            ),
+        )
+    chosen = min(
+        sweep_summaries,
+        key=lambda tolerance: (sweep_summaries[tolerance]["km_total"], tolerance),
+    )
+    return SweepSelection(
+        tolerance=chosen,
+        dominates_fixed=False,
+        reason=(
+            "No tested tolerance beats fixed on both total distance and overflow events; "
+            f"{chosen:g} is the distance-minimising fallback."
+        ),
+    )
+
+
+def run_tolerance_sweep(
+    world: pd.DataFrame,
+    days: int = SIMULATION_DAYS,
+    seed: int = 42,
+    *,
+    trucks: Sequence[Truck] | None = None,
+    classification_params: ClassificationParams | None = None,
+    tolerances: Sequence[float] = TOLERANCE_SWEEP,
+    matrix: DistanceMatrix | None = None,
+) -> dict[float, list[DailyRecord]]:
+    """Run all predictive tolerance candidates against identical daily fills."""
+    full_matrix = matrix or get_matrix(_world_points(world), timeout=0.5)
+    return {
+        float(tolerance): simulate(
+            world,
+            "predictive",
+            days,
+            seed,
+            trucks=trucks,
+            classification_params=classification_params,
+            yellow_tolerance=float(tolerance),
+            matrix=full_matrix,
+        )
+        for tolerance in tolerances
+    }
+
+
+def run_full_analysis(
+    world: pd.DataFrame,
+    days: int = SIMULATION_DAYS,
+    seed: int = 42,
+    *,
+    trucks: Sequence[Truck] | None = None,
+    classification_params: ClassificationParams | None = None,
+) -> tuple[
+    dict[str, list[DailyRecord]],
+    dict[float, dict[str, float]],
+    SweepSelection,
+]:
+    """Run baselines, sweep predictive tolerance, and choose the report default."""
+    full_matrix = get_matrix(_world_points(world), timeout=0.5)
+    baselines = {
+        policy: simulate(
+            world,
+            policy,
+            days,
+            seed,
+            trucks=trucks,
+            classification_params=classification_params,
+            matrix=full_matrix,
+        )
+        for policy in ("fixed", "fixed_naive")
+    }
+    sweep_records = run_tolerance_sweep(
+        world,
+        days,
+        seed,
+        trucks=trucks,
+        classification_params=classification_params,
+        matrix=full_matrix,
+    )
+    sweep_summaries = {
+        tolerance: summarize(records, len(world)) for tolerance, records in sweep_records.items()
+    }
+    selection = select_yellow_tolerance(sweep_summaries, summarize(baselines["fixed"], len(world)))
+    return (
+        {
+            **baselines,
+            "predictive": sweep_records[selection.tolerance],
+            "predictive_reds_only": [
+                replace(record, policy="predictive_reds_only") for record in sweep_records[0.0]
+            ],
+        },
+        sweep_summaries,
+        selection,
+    )
+
+
+def _write_sweep_svg(sweep_summaries: dict[float, dict[str, float]], path: Path) -> Path:
+    """Write a dependency-free distance/overflow frontier chart."""
+    width, height = 760, 430
+    left, right, top, bottom = 80, 30, 40, 65
+    kms = [summary["km_total"] for summary in sweep_summaries.values()]
+    overflows = [summary["overflow_events"] for summary in sweep_summaries.values()]
+    min_km, max_km = min(kms), max(kms)
+    min_overflow, max_overflow = min(overflows), max(overflows)
+
+    def scale(value: float, low: float, high: float, start: float, end: float) -> float:
+        return (start + end) / 2 if high == low else start + (value - low) / (high - low) * (end - start)
+
+    points = []
+    for tolerance, summary in sorted(sweep_summaries.items()):
+        x = scale(summary["km_total"], min_km, max_km, left, width - right)
+        y = scale(summary["overflow_events"], min_overflow, max_overflow, height - bottom, top)
+        points.append(
+            f"<circle cx='{x:.1f}' cy='{y:.1f}' r='6' fill='#0ea5e9'>"
+            f"<title>t={tolerance:g}: {summary['km_total']:.1f} km, "
+            f"{summary['overflow_events']:.0f} overflows</title></circle>"
+            f"<text x='{x + 9:.1f}' y='{y - 7:.1f}' font-size='12'>"
+            f"t={tolerance:g} ({summary['km_total']:.0f}, "
+            f"{summary['overflow_events']:.0f})</text>"
+        )
+    svg = (
+        f"<svg xmlns='http://www.w3.org/2000/svg' width='{width}' height='{height}' "
+        f"viewBox='0 0 {width} {height}'>"
+        "<rect width='100%' height='100%' fill='white'/>"
+        f"<line x1='{left}' y1='{height - bottom}' x2='{width - right}' y2='{height - bottom}' stroke='#334155'/>"
+        f"<line x1='{left}' y1='{top}' x2='{left}' y2='{height - bottom}' stroke='#334155'/>"
+        f"<text x='{width / 2:.0f}' y='{height - 18}' text-anchor='middle'>km_total</text>"
+        f"<text x='20' y='{height / 2:.0f}' text-anchor='middle' transform='rotate(-90 20 {height / 2:.0f})'>overflow_events</text>"
+        + "".join(points)
+        + "</svg>"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(svg, encoding="utf-8")
+    return path
+
+
 def write_comparison_report(
     world: pd.DataFrame,
     results: dict[str, Sequence[DailyRecord]],
     markdown_path: Path = DEFAULT_REPORT_MD,
     csv_path: Path = DEFAULT_REPORT_CSV,
+    *,
+    sweep_summaries: dict[float, dict[str, float]] | None = None,
+    selection: SweepSelection | None = None,
+    sweep_csv_path: Path = DEFAULT_SWEEP_CSV,
+    sweep_svg_path: Path = DEFAULT_SWEEP_SVG,
 ) -> tuple[Path, Path]:
     """Write daily CSV and simulated comparison; safety KPIs flank distance."""
     markdown_path.parent.mkdir(parents=True, exist_ok=True)
@@ -321,14 +495,28 @@ def write_comparison_report(
     summaries = {name: summarize(records, len(world)) for name, records in results.items()}
     baseline = summaries["fixed"]
     metrics = list(next(iter(summaries.values())))
+    distance_sources = sorted(
+        {
+            record.distance_source
+            for policy_records in results.values()
+            for record in policy_records
+            if record.distance_source != "none"
+        }
+    )
+    sector = str(world["sector"].iloc[0]) if "sector" in world and not world.empty else "all"
     lines = [
         "# 30-day predictive collection simulation",
         "",
         "> **SIMULATED DATA.** This proves policy logic on a modeled Baikonur district; "
         "real savings must be measured during the pilot.",
         "",
-        f"World: {len(world)} sites; real OSM records: {int(world['source_real'].sum())}; "
+        f"World: {len(world)} sites in sector {sector}; "
+        f"real OSM records: {int(world['source_real'].sum())}; "
         f"street-synthesized: {int((~world['source_real'].astype(bool)).sum())}.",
+        "",
+        "Distance source: "
+        + ", ".join(distance_sources or ["none"])
+        + (" (road-distance fallback, explicitly flagged)." if "haversine" in distance_sources else "."),
         "",
         "Distance savings are never presented alone: overflow events and max-interval violations "
         "are shown in the same table.",
@@ -346,7 +534,9 @@ def write_comparison_report(
             f"| {policy} | {summary['km_total']:.2f} | {delta:+.1f}% | "
             f"{summary['overflow_events']:.0f} | {summary['max_interval_violations']:.0f} |"
         )
-    lines.extend(["", "## All KPIs", "", "| KPI | " + " | ".join(summaries) + " |", "|---|" + "---:|" * len(summaries)])
+    lines.extend(
+        ["", "## All KPIs", "", "| KPI | " + " | ".join(summaries) + " |", "|---|" + "---:|" * len(summaries)]
+    )
     for metric in metrics:
         values = " | ".join(f"{summaries[policy][metric]:.2f}" for policy in summaries)
         lines.append(f"| {metric} | {values} |")
@@ -356,6 +546,35 @@ def write_comparison_report(
         value = summaries["predictive"][metric]
         delta = (value - fixed_value) / fixed_value * 100 if fixed_value else 0.0
         lines.append(f"| {metric} | {delta:+.1f}% |")
+    if sweep_summaries is not None:
+        sweep_rows = [
+            {"yellow_tolerance": tolerance, **summary}
+            for tolerance, summary in sorted(sweep_summaries.items())
+        ]
+        pd.DataFrame(sweep_rows).to_csv(sweep_csv_path, index=False)
+        _write_sweep_svg(sweep_summaries, sweep_svg_path)
+        lines.extend(
+            [
+                "",
+                "## YELLOW_TOLERANCE trade-off sweep",
+                "",
+                "![Distance versus overflow frontier](yellow_tolerance_frontier.svg)",
+                "",
+                "| tolerance | " + " | ".join(metrics) + " |",
+                "|---:|" + "---:|" * len(metrics),
+            ]
+        )
+        for tolerance, summary in sorted(sweep_summaries.items()):
+            values = " | ".join(f"{summary[metric]:.2f}" for metric in metrics)
+            lines.append(f"| {tolerance:g} | {values} |")
+        if selection is not None:
+            lines.extend(
+                [
+                    "",
+                    f"**Selected default: `YELLOW_TOLERANCE = {selection.tolerance:g}`.** "
+                    + selection.reason,
+                ]
+            )
     lines.append("")
     markdown_path.write_text("\n".join(lines), encoding="utf-8")
     return markdown_path, csv_path
@@ -393,8 +612,13 @@ def _main() -> None:
     parser.add_argument("--world", type=Path, default=Path("data/world.csv"))
     args = parser.parse_args()
     world = pd.read_csv(args.world) if args.world.exists() else generate_world(seed=args.seed)
-    results = run_comparison(world, args.days, args.seed)
-    md_path, csv_path = write_comparison_report(world, results)
+    results, sweep_summaries, selection = run_full_analysis(world, args.days, args.seed)
+    md_path, csv_path = write_comparison_report(
+        world,
+        results,
+        sweep_summaries=sweep_summaries,
+        selection=selection,
+    )
     print(f"Wrote simulated comparison to {md_path} and {csv_path}")
 
 

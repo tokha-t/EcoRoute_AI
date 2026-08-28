@@ -50,8 +50,26 @@ One record per collection point. A site holds 1..N containers and is one truck s
 
 ## 3. Synthetic world generation (`src/sim/world.py`)
 
-1. **Coordinates.** Query Overpass for `amenity=waste_disposal` / `amenity=recycling` inside the
-   Baikonur bbox (`51.13, 71.34, 51.22, 71.47`). Use every real node found; set `source_real=True`.
+1. **District boundary — polygon, not bbox (corrected 2026-08-28).** The bbox previously specified
+   here was wrong: it is a rectangle over the old city centre, while Baikonur district ("Новый
+   район", ~16 936 ha) covers the northern and north-eastern part of Astana plus a detached 460 ha
+   exclave to the north-west.
+   - Fetch the real administrative polygon from Overpass:
+     `relation["boundary"="administrative"]["admin_level"~"9|10"]` whose name matches
+     `Байқоңыр|Байконур` within Astana. Convert to one or more polygons (the district is
+     **multi-part** — keep the exclave).
+   - Every generated site must pass a point-in-polygon test against that geometry. Cache the
+     polygon as GeoJSON in `data/cache/osm/baikonur_boundary.geojson`.
+   - If the relation cannot be found or fetched and no cache exists, **stop and report** — do not
+     silently fall back to a bbox, and do not invent a boundary.
+   - A bbox may still be used as a *query* optimisation (fetch candidates, then filter by polygon),
+     but never as the boundary itself.
+2. **Pilot sector.** The full district is far too large for one pilot: 250 sites over 16 936 ha is
+   unrealistically sparse. Support `--sector <name>` restricting generation to a single OSM
+   `place=suburb|neighbourhood` inside the district; default to the most densely built one. The UI
+   states which sector is shown. This matches the real pilot design (150–300 sites, 1–2 trucks).
+3. **Coordinates.** Query Overpass for `amenity=waste_disposal` / `amenity=recycling` inside the
+   chosen area. Use every real node found; set `source_real=True`.
 2. **Top-up to target count** (default 250 sites): place remaining sites on real residential
    street geometry from OSM (`highway=residential|living_street`), snapped to the road, min 60 m
    apart. `source_real=False`.
@@ -119,9 +137,21 @@ Distances and travel times: OSRM road matrix with the existing haversine fallbac
 
 - **Capacity:** load accumulates per stop as
   `load_kg = capacity_liters * min(fill_pct,100)/100 * DENSITY_KG_PER_L`.
-- **Landfill dump trips (new, required):** a truck may visit the landfill node mid-route; doing so
+- **Landfill dump trips (required):** a truck may visit the landfill node mid-route; doing so
   resets its load to zero and costs `LANDFILL_SERVICE_SECONDS` (default 900) plus travel. Model as
   reload/refill nodes in OR-Tools with multiple visits allowed. A route may contain several dumps.
+- **Empty return to depot (added 2026-08-28 — currently violated).** A truck physically cannot
+  return to the depot loaded: waste must be discharged at the polygon first. Therefore:
+  - Constrain the load dimension so that `CumulVar(End(vehicle)) == 0` for every vehicle.
+  - Consequence: any route that collects anything must visit the landfill **after its last
+    collection stop**, before returning to the depot. Routes that collect nothing stay empty and
+    need no landfill visit.
+  - This adds real distance to every route (depot → sites → … → landfill → depot). All KPI numbers
+    must be regenerated after this change; earlier reports understate route length.
+  - The route sheet and map must show the final landfill leg explicitly, so a dispatcher sees it.
+  - Test: for every vehicle in every solved plan, the sum of collected load between the last
+    landfill visit and the End node is zero; a plan where a truck collects one site contains a
+    landfill stop immediately before the depot return.
 - **Shift:** total route duration ≤ `shift_seconds`, including service and dump times.
 - **Mandatory:** every RED site must appear in exactly one route.
 - **Start/end:** depot.
@@ -214,8 +244,33 @@ For each day record:
 | `fuel_liters`, `co2_kg`, `cost_kzt` | From existing savings constants |
 | `sites_served` | Count |
 
-Output: `reports/simulation_30d.md` + a CSV of daily rows + a summary table with the percentage
-delta of predictive vs fixed for every KPI. **Do not report a headline savings number without
+### 6.1 YELLOW_TOLERANCE sweep (added 2026-08-28 — required)
+
+The first 30-day run exposed a real problem: with `YELLOW_TOLERANCE = 1.0` the predictive policy
+served 6 414 sites against the fixed policy's 6 450 — it collected almost everything, drove **9.9%
+more kilometres than the baseline**, and only won on overflow. A default that loses on the headline
+KPI is not shippable, and quietly hand-tuning it to look good would be dishonest.
+
+Therefore the simulation must **sweep** the parameter instead of assuming it:
+
+- Run the predictive policy at `YELLOW_TOLERANCE ∈ {0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0}`
+  (0.0 is equivalent to `reds_only`).
+- For each value record the full KPI set.
+- Emit a **trade-off table and chart**: km_total on one axis, overflow_events on the other, one
+  point per tolerance value. This is the frontier between cost and service quality.
+- **Choose the default automatically**: the largest tolerance whose km_total is below the `fixed`
+  baseline AND whose overflow_events are also below `fixed`. If no value satisfies both, say so
+  explicitly in the report and default to the km-minimising value — do not pretend a dominating
+  setting exists.
+- Write the chosen value and the reason into the report, and use it as the config default.
+
+This turns a tuning knob into an argument: "the city can choose where to sit between cost and
+service level, and here is the measured curve." That is a stronger pitch than any single number.
+
+### 6.2 Output
+
+`reports/simulation_30d.md` + a CSV of daily rows + the sweep table + a summary table with the
+percentage delta of predictive vs fixed for every KPI. **Do not report a headline savings number without
 also reporting overflow_events and max_interval_violations** — a policy that saves km by letting
 bins overflow is a failure, and the report must make that visible.
 

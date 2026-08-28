@@ -59,13 +59,15 @@ from src.photo_fill.estimator import (
     upload_rejection_reason,
 )
 from src.predict import assign_priority, predict_fill_levels
+from src.reports.route_sheet import build_route_sheet
 from src.routing import compare_routes
 from src.savings import calculate_savings
 from src.sim.fill import ClassificationParams, advance_day, classify, empty_sites
 from src.sim.run import (
     DEFAULT_REPORT_CSV,
     DEFAULT_REPORT_MD,
-    run_comparison,
+    DEFAULT_SWEEP_CSV,
+    run_full_analysis,
     summarize,
     write_comparison_report,
 )
@@ -224,9 +226,11 @@ def model_feature_importance_chart():
         importance_df = (
             pd.DataFrame({"feature": feature_names, "importance": importances})
             .assign(
-                feature=lambda df: df["feature"]
-                .str.replace("categorical__", "", regex=False)
-                .str.replace("numeric__", "", regex=False)
+                feature=lambda df: (
+                    df["feature"]
+                    .str.replace("categorical__", "", regex=False)
+                    .str.replace("numeric__", "", regex=False)
+                )
             )
             .sort_values("importance", ascending=False)
             .head(10)
@@ -262,7 +266,11 @@ def render_kpis(savings: dict, predicted_df: pd.DataFrame) -> None:
         ("Bins skipped", f"{savings['bins_skipped']:,}", f"{savings['skipped_percent']:.1f}%"),
         ("Avg predicted fill", f"{avg_fill:.1f}%", None),
         ("Optimized route", f"{savings['optimized_route_distance_km']:.1f} km", None),
-        ("Distance saved", f"{savings['distance_saved_km']:.1f} km", f"{savings['distance_saved_percent']:.1f}%"),
+        (
+            "Distance saved",
+            f"{savings['distance_saved_km']:.1f} km",
+            f"{savings['distance_saved_percent']:.1f}%",
+        ),
         ("Time saved", f"{savings['estimated_total_time_saved_minutes']:.0f} min", None),
         ("Fuel saved", f"{savings['estimated_fuel_saved_liters']:.1f} L", None),
         ("CO₂ saved", f"{savings['estimated_co2_saved_kg']:.1f} kg", None),
@@ -671,12 +679,8 @@ def render_photo_estimates_table(current: list[dict], known_site_ids: list[str])
         column_config={
             "photo": st.column_config.TextColumn("photo", disabled=True),
             "site_id": st.column_config.SelectboxColumn("site", options=known_site_ids),
-            "cls": st.column_config.SelectboxColumn(
-                "class", options=list(FILL_CLASSES) + [UNCERTAIN]
-            ),
-            "confidence": st.column_config.NumberColumn(
-                "confidence", disabled=True, format="%.2f"
-            ),
+            "cls": st.column_config.SelectboxColumn("class", options=list(FILL_CLASSES) + [UNCERTAIN]),
+            "confidence": st.column_config.NumberColumn("confidence", disabled=True, format="%.2f"),
             "flag": st.column_config.TextColumn("status", disabled=True),
             "include": st.column_config.CheckboxColumn("include"),
         },
@@ -796,8 +800,7 @@ def render_photo_plan_tab(
         excluded = len(edited) - len(confirmed)
         if excluded:
             st.caption(
-                f"{excluded} row(s) stay out of the plan: unchecked, no site assigned, "
-                "or still uncertain."
+                f"{excluded} row(s) stay out of the plan: unchecked, no site assigned, or still uncertain."
             )
         if st.button(
             f"Add to today's plan ({len(confirmed)} site(s))",
@@ -962,12 +965,8 @@ def render_v2_simulation(
     metric_columns[2].metric(t("yellow_served", lang), len(plan.served_yellow))
     metric_columns[3].metric(t("distance", lang), f"{plan.total_distance_m / 1000:.1f} km")
 
-    map_figure, geometry_source = create_simulation_map(
-        classified, plan, DEPOT_COORDS, LANDFILL_COORDS, lang
-    )
-    route_label = t(
-        "route_source_osrm" if geometry_source == "osrm" else "route_source_straight", lang
-    )
+    map_figure, geometry_source = create_simulation_map(classified, plan, DEPOT_COORDS, LANDFILL_COORDS, lang)
+    route_label = t("route_source_osrm" if geometry_source == "osrm" else "route_source_straight", lang)
     real_count = int(classified["source_real"].sum())
     st.caption(
         t(
@@ -976,6 +975,7 @@ def render_v2_simulation(
             real=real_count,
             synthetic=len(classified) - real_count,
         )
+        + f" · {t('sector', lang)}: {classified['sector'].iloc[0]}"
         + f" · {route_label}"
     )
     stretch_plotly_chart(map_figure)
@@ -991,7 +991,26 @@ def render_v2_simulation(
             cols[2].metric(t("duration", lang), f"{route.duration_s / 3600:.1f} h")
             cols[3].metric(t("dumps", lang), route.dump_stops)
             load_ratio = min(1.0, route.max_segment_load_kg / truck_capacity_kg)
-            st.progress(load_ratio, text=f"{t('load', lang)}: {route.max_segment_load_kg:.0f} / {truck_capacity_kg:.0f} kg")
+            st.progress(
+                load_ratio,
+                text=f"{t('load', lang)}: {route.max_segment_load_kg:.0f} / {truck_capacity_kg:.0f} kg",
+            )
+
+    if plan.routes:
+        route_sheet = build_route_sheet(plan, classified, lang)
+        sheet_csv, sheet_html = st.columns(2)
+        sheet_csv.download_button(
+            t("download_route_csv", lang),
+            route_sheet.to_csv(),
+            file_name=f"route_sheet_day_{current_day}.csv",
+            mime="text/csv",
+        )
+        sheet_html.download_button(
+            t("download_route_html", lang),
+            route_sheet.html.encode("utf-8"),
+            file_name=f"route_sheet_day_{current_day}.html",
+            mime="text/html",
+        )
 
     if plan.skipped_yellow:
         with st.expander(
@@ -1021,24 +1040,51 @@ def render_v2_simulation(
 
     if st.button(t("run_30", lang), type="primary"):
         with st.spinner("Считаем 30 дней…" if lang == "ru" else "Running 30 days…"):
-            results = run_comparison(
+            results, sweep_summaries, selection = run_full_analysis(
                 initial_world,
                 days=30,
                 seed=42,
                 trucks=trucks,
                 classification_params=classification_params,
-                yellow_tolerance=yellow_tolerance,
             )
-            write_comparison_report(initial_world, results)
+            write_comparison_report(
+                initial_world,
+                results,
+                sweep_summaries=sweep_summaries,
+                selection=selection,
+            )
             st.session_state["v2_report_summaries"] = {
                 policy: summarize(records, len(initial_world)) for policy, records in results.items()
             }
+            st.session_state["v2_sweep_summaries"] = sweep_summaries
+            st.session_state["v2_sweep_selection"] = selection
     summaries = st.session_state.get("v2_report_summaries")
     if summaries:
         st.subheader(t("comparison", lang))
         summary_df = pd.DataFrame(summaries).T.reset_index(names="policy")
         stretch_dataframe(summary_df, hide_index=True)
-        download_1, download_2 = st.columns(2)
+        sweep_summaries = st.session_state.get("v2_sweep_summaries")
+        selection = st.session_state.get("v2_sweep_selection")
+        if sweep_summaries and selection:
+            selection_key = "selection_dominates" if selection.dominates_fixed else "selection_fallback"
+            st.caption(f"{t('selected_tolerance', lang)}: {selection.tolerance:g}. {t(selection_key, lang)}")
+            sweep_frame = pd.DataFrame(
+                [
+                    {"yellow_tolerance": tolerance, **summary}
+                    for tolerance, summary in sorted(sweep_summaries.items())
+                ]
+            )
+            frontier = px.scatter(
+                sweep_frame,
+                x="km_total",
+                y="overflow_events",
+                text="yellow_tolerance",
+                title=t("frontier", lang),
+            )
+            frontier.update_traces(textposition="top center", marker={"size": 11})
+            stretch_plotly_chart(apply_chart_theme(frontier))
+            stretch_dataframe(sweep_frame, hide_index=True)
+        download_1, download_2, download_3 = st.columns(3)
         if DEFAULT_REPORT_MD.exists():
             download_1.download_button(
                 t("download_report", lang),
@@ -1051,6 +1097,13 @@ def render_v2_simulation(
                 t("download_csv", lang),
                 DEFAULT_REPORT_CSV.read_bytes(),
                 file_name="simulation_30d.csv",
+                mime="text/csv",
+            )
+        if DEFAULT_SWEEP_CSV.exists():
+            download_3.download_button(
+                t("download_sweep", lang),
+                DEFAULT_SWEEP_CSV.read_bytes(),
+                file_name="yellow_tolerance_sweep.csv",
                 mime="text/csv",
             )
 
@@ -1066,8 +1119,11 @@ with st.sidebar:
         index=0,
         key=MODE_TOGGLE_KEY,
         format_func=lambda value: (
-            "Симуляция" if value == MODE_SIMULATION and lang == "ru" else
-            "Фото с площадки" if value == MODE_LIVE_PHOTO and lang == "ru" else value
+            "Симуляция"
+            if value == MODE_SIMULATION and lang == "ru"
+            else "Фото с площадки"
+            if value == MODE_LIVE_PHOTO and lang == "ru"
+            else value
         ),
         help=(
             "Симуляция: 250 площадок на реальных координатах. Фото: оценки реальных "
@@ -1094,9 +1150,7 @@ with st.sidebar:
         red_threshold = st.slider(t("red_threshold", lang), yellow_threshold + 1, 100, int(RED_THRESHOLD))
         planning_horizon = st.slider(t("horizon", lang), 1, 3, PLANNING_HORIZON_DAYS)
         max_interval = st.slider(t("max_interval", lang), 1, 7, MAX_INTERVAL_DAYS)
-        yellow_tolerance = st.slider(
-            t("yellow_tolerance", lang), 0.5, 2.0, float(YELLOW_TOLERANCE), 0.1
-        )
+        yellow_tolerance = st.slider(t("yellow_tolerance", lang), 0.0, 2.0, float(YELLOW_TOLERANCE), 0.25)
     st.subheader("Маршрутизация" if lang == "ru" else "Routing")
     if mode == MODE_SIMULATION:
         engine = ENGINE_CVRP
@@ -1127,7 +1181,8 @@ with st.sidebar:
             """
             <div class="sidebar-note">
                 <strong>Смоделированный район</strong><br>
-                250 площадок на реальных координатах района Байқоңыр. Все темпы накопления
+                250 площадок в выбранном секторе района Байқоңыр. Все координаты находятся
+                внутри административной границы OSM; темпы накопления
                 синтетические; результат не является измеренной экономией.
             </div>
             """
@@ -1135,7 +1190,8 @@ with st.sidebar:
             else """
             <div class="sidebar-note">
                 <strong>Modeled district</strong><br>
-                250 sites on real Baikonur coordinates. All accumulation rates are synthetic;
+                250 sites in the selected Baikonur sector. Every coordinate is inside the OSM
+                administrative boundary. All accumulation rates are synthetic;
                 this is not measured savings.
             </div>
             """

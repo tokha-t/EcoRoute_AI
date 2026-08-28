@@ -34,7 +34,13 @@ def sites(rows: list[tuple[str, float, float, float, float, str]]) -> pd.DataFra
     )
 
 
-def solve(frame: pd.DataFrame, capacity: float = 5_000, max_dumps: int = 4):
+def solve(
+    frame: pd.DataFrame,
+    capacity: float = 5_000,
+    max_dumps: int = 4,
+    shift_duration_s: float = 100_000,
+    yellow_tolerance: float = 1.0,
+):
     depot = (0.0, 0.0)
     landfill = (0.0, 500.0)
     points = [depot] + list(zip(frame["lat"], frame["lon"])) + [landfill]
@@ -43,7 +49,8 @@ def solve(frame: pd.DataFrame, capacity: float = 5_000, max_dumps: int = 4):
         landfill=landfill,
         matrix=line_matrix(points),
         max_dump_trips=max_dumps,
-        shift_duration_s=100_000,
+        shift_duration_s=shift_duration_s,
+        yellow_tolerance=yellow_tolerance,
         time_limit_s=0.25,
     )
     return plan_routes(frame, [Truck("T1", capacity_kg=capacity)], params)
@@ -59,8 +66,10 @@ def test_dump_trips_reset_capacity_and_all_red_are_served() -> None:
     )
     plan = solve(frame, capacity=150)
     assert plan.violations == []
-    assert plan.routes[0].dump_stops == 2
+    assert plan.routes[0].dump_stops == 3
     assert plan.routes[0].max_segment_load_kg <= 150
+    assert plan.routes[0].end_load_kg == 0
+    assert plan.routes[0].ordered_stops[-1] == "LANDFILL"
     assert sorted(plan.routes[0].site_ids) == ["R1", "R2", "R3"]
     assert plan.unserved_red == []
 
@@ -97,3 +106,21 @@ def test_named_infeasibility_for_single_red() -> None:
     assert plan.routes == []
     assert plan.unserved_red == ["TOO_HEAVY"]
     assert any("TOO_HEAVY" in violation for violation in plan.violations)
+
+
+def test_single_site_returns_empty_via_landfill() -> None:
+    plan = solve(sites([("ONLY", 0, 1000, 1000, 100, "RED")]), max_dumps=1)
+    assert plan.violations == []
+    assert plan.routes[0].ordered_stops == ["ONLY", "LANDFILL"]
+    assert plan.routes[0].end_load_kg == 0
+
+
+def test_named_infeasibility_when_landfill_return_exceeds_shift() -> None:
+    plan = solve(
+        sites([("REMOTE", 0, 1000, 1000, 100, "RED")]),
+        max_dumps=1,
+        shift_duration_s=100,
+    )
+    assert plan.routes == []
+    assert plan.unserved_red == ["REMOTE"]
+    assert any("REMOTE" in violation and "полигон" in violation for violation in plan.violations)
