@@ -34,6 +34,7 @@ CONFIDENCE_THRESHOLD = 0.6  # below this, a photo goes to the manual-check list
 MAX_INTERVAL_DAYS = 3
 
 # --- V2 predictive collection simulation --------------------------------
+APP_VERSION = "2.1"
 # Query envelope of the authoritative multi-part OSM relation. It may narrow
 # remote requests but must never be used as the district boundary.
 BAIKONUR_BBOX = (51.1475427, 71.2980936, 51.3511101, 71.7063332)
