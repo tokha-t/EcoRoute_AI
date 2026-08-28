@@ -148,3 +148,19 @@ def test_manual_override_changes_only_the_requested_day_solve() -> None:
     assert captured == []
     assert classified.loc[0, "manual_override"] == "exclude"
     assert plan.manual_overrides == {"S1": "exclude"}
+
+
+def test_real_solver_trajectory_gate_is_deterministic() -> None:
+    data = world()
+    data["fill_pct"] = 90.0
+    settings = params()
+    _, first = solve_day(data, 0, settings, matrix=matrix())
+    _, second = solve_day(data, 0, settings, matrix=matrix())
+    assert first == second
+    assert first.routes
+    assert all(route.site_ids for route in first.routes)
+    assert all(route.ordered_stops[-1] == "LANDFILL" for route in first.routes)
+    assert all(
+        not any(a == b == "LANDFILL" for a, b in zip(route.ordered_stops, route.ordered_stops[1:]))
+        for route in first.routes
+    )

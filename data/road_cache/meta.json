@@ -1,14 +1,14 @@
 {
   "world_hash": "d492c18484e113bbdd1f3b4d20296cd5919fb09ba9ce343e9678e4a3567e8c0d",
-  "built_at": "2026-08-28T17:23:53.644688+00:00",
+  "built_at": "2026-08-28T22:17:55.299589+00:00",
   "node_count": 252,
   "k": 25,
   "osrm_profile": "driving",
   "coverage_pct": 100.0,
   "geometry_request_coverage_pct": 100.0,
-  "geometry_edges": 7423,
-  "requested_geometry_edges": 7423,
-  "reference_route_edges": 1523,
+  "geometry_edges": 7482,
+  "requested_geometry_edges": 7482,
+  "reference_route_edges": 1619,
   "depot": [
     51.190491,
     71.428779

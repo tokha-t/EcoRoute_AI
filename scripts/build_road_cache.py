@@ -106,7 +106,9 @@ def _reference_route_edges(
         for route in snapshot.plan.routes:
             ordered = ["DEPOT", *route.ordered_stops, "DEPOT"]
             for start, end in zip(ordered[:-1], ordered[1:]):
-                route_edges.add((indices[start], indices[end]))
+                edge = (indices[start], indices[end])
+                if edge[0] != edge[1]:
+                    route_edges.add(edge)
     return route_edges
 
 

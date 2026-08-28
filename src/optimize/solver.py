@@ -76,6 +76,9 @@ class SolverParams:
     yellow_tolerance: float = YELLOW_TOLERANCE
     fallback_cost_per_m3_m: float = FALLBACK_COST_PER_M3_M
     reds_only: bool = False
+    # Optional deterministic termination used by trajectory precomputation.
+    # The normal report/CLI solver keeps the time-budget behavior when None.
+    solution_limit: int | None = None
 
 
 @dataclass(frozen=True)
@@ -609,6 +612,8 @@ def _solve_v2_ortools(
     search.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PARALLEL_CHEAPEST_INSERTION
     search.local_search_metaheuristic = routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
     search.time_limit.FromMilliseconds(max(50, int(params.time_limit_s * 1000)))
+    if params.solution_limit is not None:
+        search.solution_limit = params.solution_limit
     solution = routing.SolveWithParameters(search)
     if solution is None:
         return None
@@ -640,9 +645,28 @@ def _extract_v2_solution(
             routing_nodes.append(manager.IndexToNode(index) if not routing.IsEnd(index) else 0)
         if len(routing_nodes) == 2:
             continue
-        path = [node if 1 <= node <= n_sites else landfill_node for node in routing_nodes]
-        path[0] = path[-1] = 0
         site_nodes = [node for node in routing_nodes[1:-1] if 1 <= node <= n_sites]
+        # Optional reset nodes can appear in an early incumbent for an otherwise
+        # idle vehicle. They are not a collection route and must never reach the
+        # dispatcher map, KPIs, or road-geometry coverage audit.
+        if not site_nodes:
+            continue
+        # Keep a reset only after at least one collection stop. Early
+        # incumbents may contain leading or repeated optional dump nodes; they
+        # have no operational meaning and can create landfill→landfill legs.
+        path = [0]
+        sites_since_dump = False
+        for node in routing_nodes[1:-1]:
+            if 1 <= node <= n_sites:
+                path.append(node)
+                sites_since_dump = True
+            elif sites_since_dump:
+                path.append(landfill_node)
+                sites_since_dump = False
+        if sites_since_dump:
+            path.append(landfill_node)
+        path.append(0)
+        site_nodes = [node for node in path[1:-1] if 1 <= node <= n_sites]
         served.update(site_nodes)
         distance, duration, total_load, dumps, max_segment = _v2_metrics(
             path, loads, matrix, truck, params, landfill_node
@@ -660,9 +684,7 @@ def _extract_v2_solution(
                 if before == landfill_node
                 else 0.0
             )
-            cumulative_duration.append(
-                cumulative_duration[-1] + service + matrix.seconds[before][after]
-            )
+            cumulative_duration.append(cumulative_duration[-1] + service + matrix.seconds[before][after])
             if 1 <= after <= n_sites:
                 running_load += loads[after - 1]
             elif after == landfill_node:
@@ -679,8 +701,8 @@ def _extract_v2_solution(
                 distance_m=distance,
                 dump_stops=dumps,
                 ordered_stops=[
-                    "LANDFILL" if node > n_sites else str(sites.iloc[node - 1]["_site_id"])
-                    for node in routing_nodes[1:-1]
+                    "LANDFILL" if node == landfill_node else str(sites.iloc[node - 1]["_site_id"])
+                    for node in path[1:-1]
                 ],
                 max_segment_load_kg=max_segment,
                 cumulative_distance_m=cumulative,
@@ -746,6 +768,8 @@ def _solve(
     search.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PARALLEL_CHEAPEST_INSERTION
     search.local_search_metaheuristic = routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
     search.time_limit.FromMilliseconds(int(params.time_limit_s * 1000))
+    if params.solution_limit is not None:
+        search.solution_limit = params.solution_limit
 
     return routing.SolveWithParameters(search), manager, routing
 

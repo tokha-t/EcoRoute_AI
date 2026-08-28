@@ -45,7 +45,10 @@ class TrajectoryParams:
     reds_only: bool = False
     max_dump_trips: int = MAX_DUMP_TRIPS
     fallback_cost_per_m3_m: float = FALLBACK_COST_PER_M3_M
-    solver_time_limit_s: float = 1.0
+    # The fixed solution-count gate makes the trajectory independent of CPU
+    # speed; the generous wall-clock cap remains only as a safety valve.
+    solver_time_limit_s: float = 5.0
+    solver_solution_limit: int = 100
 
 
 @dataclass(frozen=True)
@@ -161,6 +164,7 @@ def solve_day(
         yellow_tolerance=params.yellow_tolerance,
         reds_only=params.reds_only,
         time_limit_s=params.solver_time_limit_s,
+        solution_limit=params.solver_solution_limit,
     )
     plan = solver(candidates, params.trucks, solver_params)
     return classified, replace(plan, manual_overrides=overrides)

@@ -40,9 +40,9 @@ Policy comparison (same four-truck fleet and accumulation sequence):
 
 | Policy | Distance | Overflow events | Max-interval violations |
 |---|---:|---:|---:|
-| Fixed | 5,565 km | 237 | 50 |
-| Predictive, selected tolerance 0.0 | 4,819 km | 171 | 0 |
-| Predictive, tolerance 0.25 | 6,082 km | 127 | 0 |
+| Fixed | 5,562 km | 237 | 50 |
+| Predictive, selected tolerance 0.0 | 4,818 km | 171 | 0 |
+| Predictive, tolerance 0.25 | 6,141 km | 125 | 0 |
 
 > Every KPI above is **simulated**. The run demonstrates policy behavior on real OSM geometry; it does not estimate measured Astana savings. The required seven-point sweep selected tolerance 0.0 because it is the largest tested value improving both headline measures: 13.4% less distance and 27.8% fewer overflow events than fixed. The full report keeps the service-quality trade-off visible instead of hiding it behind one savings figure.
 
