@@ -16,9 +16,9 @@ The legacy dataframe contract still uses the original OR-Tools CVRP. V2 site
 frames (identified by ``klass``/``site_id``) use a two-pass OR-Tools model.
 Each pass receives duplicate optional landfill nodes whose negative demand and
 load-dimension slack reset a truck's load; a second dimension caps dump visits.
-RED nodes remain mandatory, while YELLOW disjunction penalties are scaled by
-pickup volume and the RED-only reference cost. Dump service counts toward both
-the objective and shift duration.
+RED nodes remain mandatory, while YELLOW disjunction penalties are the pickup
+volume times an explicit marginal-detour budget in metres per cubic metre.
+Dump service counts toward both the objective and shift duration.
 """
 
 from __future__ import annotations
@@ -33,10 +33,10 @@ from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 
 from src.config import (
     DENSITY_KG_PER_L,
+    DETOUR_BUDGET_M_PER_M3,
     FALLBACK_COST_PER_M3_M,
     LANDFILL_SERVICE_SECONDS,
     MAX_DUMP_TRIPS,
-    YELLOW_TOLERANCE,
 )
 from src.optimize.distances import DistanceMatrix, Point, get_matrix
 
@@ -73,7 +73,7 @@ class SolverParams:
     landfill: Point | None = None
     landfill_service_s: float = LANDFILL_SERVICE_SECONDS
     max_dump_trips: int = MAX_DUMP_TRIPS
-    yellow_tolerance: float = YELLOW_TOLERANCE
+    detour_budget_m_per_m3: float = DETOUR_BUDGET_M_PER_M3
     fallback_cost_per_m3_m: float = FALLBACK_COST_PER_M3_M
     reds_only: bool = False
     # Optional deterministic termination used by trajectory precomputation.
@@ -458,7 +458,7 @@ def _plan_v2(sites_df: pd.DataFrame, trucks: Sequence[Truck], params: SolverPara
             mode=mode,
         )
 
-    penalties = {node: volumes[node - 1] * reference_cost * params.yellow_tolerance for node in yellow_nodes}
+    penalties = {node: volumes[node - 1] * params.detour_budget_m_per_m3 for node in yellow_nodes}
     pass_two = _solve_v2_ortools(sites, loads, trucks, matrix, params, penalties)
     if pass_two is None:
         return _v2_empty_plan(

@@ -434,6 +434,79 @@ The simulation is not the product; the daily plan is. Each day view must offer:
 - [ ] Route sheet for any day/truck exports and prints with all stops in order.
 - [ ] All KPI reports regenerated with cache-backed road distances; the previous numbers are void.
 
+## 8ter. V2.2 — Fair baseline and honest calibration (added 2026-08-29)
+
+The V2.1 run produced a good headline (−13.4% km, −27.8% overflow, 0 violations, 70.3% mean fill at
+pickup). Four defects in *how that number was produced* must be fixed before it is shown to anyone,
+because each is the kind of thing a reviewing engineer finds quickly and then stops believing the rest.
+
+### 8ter.1 The baseline is unfairly penalised (critical)
+
+`FIXED_INTERVAL_DAYS["private"] = 3` while `MAX_INTERVAL_DAYS = 3`, and the violation test is
+`days_since_service >= MAX_INTERVAL_DAYS`. A private-sector site serviced exactly on its schedule is
+therefore counted as violating on every cycle — the source of all 50 baseline violations and of the
+"−100%" headline.
+
+Required:
+- Violation is `days_since_service > MAX_INTERVAL_DAYS` (strictly greater). Classification rule §4.2.1
+  keeps `>=` for *promotion to RED* — being due is not the same as being late — but the KPI counts
+  only genuine lateness.
+- Add an invariant test: **the fixed baseline must produce zero max-interval violations by
+  construction**, since its own schedule is within the limit. If it does not, the baseline or the
+  constant is misconfigured and the run must fail loudly rather than flatter us.
+- Document in the report that the baseline is a compliant, idealised calendar — a real operator also
+  reacts to complaints, so the true baseline is somewhere between `fixed` and `predictive`.
+
+Never compare against a baseline that is worse than what the operator actually does. An advantage
+that survives a charitable baseline is real; one that needs a hobbled baseline is a liability.
+
+### 8ter.2 The YELLOW_TOLERANCE knob is saturated (critical)
+
+Sweep result: tolerance 0 serves 3 562 sites; 0.25 serves 5 718; 0.5–2.0 are all ~5 900–6 100 and
+differ by noise. The entire useful range lies in **0–0.25**, which the sweep never sampled, so the
+selection rule chose 0.0 and `predictive` became identical to `predictive_reds_only`. The core product
+rule — serve a yellow bin when it is nearly free — is currently not exercised at all.
+
+Required:
+- Re-sweep at `{0.0, 0.02, 0.05, 0.08, 0.12, 0.16, 0.20, 0.25, 0.5, 1.0}`.
+- If the frontier is still a cliff rather than a curve, the penalty formula is mis-scaled: replace the
+  linear `volume × reference_cost × tolerance` with an explicit **marginal detour budget** —
+  serve a yellow site when `insertion_cost_m <= DETOUR_BUDGET_M_PER_M3 * volume_m3`, sweeping
+  `DETOUR_BUDGET_M_PER_M3` over `{0, 100, 200, 400, 800, 1600}` m per m³. This is directly
+  interpretable ("we will drive at most 400 m extra per cubic metre") and therefore explainable to a
+  dispatcher, which the abstract tolerance never was.
+- The report must show where on the frontier the default sits and what it costs, and must state
+  plainly if no setting dominates the baseline on both km and overflow.
+
+### 8ter.3 Pilot sector must be residential (important)
+
+Sector selection picked **Өндіріс**, an industrial zone, because it optimised for built density. The
+fill model encodes residential rhythms (weekend peaks, school-zone weekday peaks), so an industrial
+sector simulates the wrong city.
+
+Required: rank candidate sectors by count of `building=apartments|residential|house` and pick the
+highest — not raw building density. Expose `--sector` to override. The report and the UI must name the
+sector and its dominant `area_type` mix, so nobody has to guess what was simulated.
+
+### 8ter.4 Report the synthetic share prominently (important)
+
+After sector filtering only **13 of 250** sites are real OSM records. That is acceptable — OSM
+coverage of container pads in Astana is thin — but it must never be discoverable only in fine print.
+The map legend, the report header, and any exported route sheet carry:
+`"Реальных площадок из OSM: N из M; остальные размещены на реальных улицах."`
+
+If a real registry is later imported (M7c), this line switches to `"данные оператора"` automatically.
+
+### 8ter.5 Acceptance criteria for V2.2
+
+- [ ] Fixed baseline yields exactly 0 max-interval violations; a test asserts it.
+- [ ] Sweep includes the 0–0.25 range; the report shows a curve, and the chosen default is justified
+      in one sentence naming its km and overflow cost.
+- [ ] `predictive` and `predictive_reds_only` differ in the report — if they do not, the yellow rule is
+      inert and the run must say so explicitly rather than presenting identical columns.
+- [ ] Selected sector is residential/mixed; its `area_type` composition appears in the report.
+- [ ] Real-vs-synthesized site counts appear in the map legend, report header, and route sheets.
+
 ## 9. Non-goals
 
 - No real operator data, no data ingestion pipeline (that is the pilot).

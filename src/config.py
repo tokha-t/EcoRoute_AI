@@ -34,7 +34,7 @@ CONFIDENCE_THRESHOLD = 0.6  # below this, a photo goes to the manual-check list
 MAX_INTERVAL_DAYS = 3
 
 # --- V2 predictive collection simulation --------------------------------
-APP_VERSION = "2.1"
+APP_VERSION = "2.2"
 # Query envelope of the authoritative multi-part OSM relation. It may narrow
 # remote requests but must never be used as the district boundary.
 BAIKONUR_BBOX = (51.1475427, 71.2980936, 51.3511101, 71.7063332)
@@ -53,9 +53,9 @@ PLANNING_HORIZON_DAYS = 1
 
 LANDFILL_SERVICE_SECONDS = 900.0
 MAX_DUMP_TRIPS = 4
-# Selected reproducibly by the seven-point 30-day frontier sweep: 0.0 is the
-# largest tested value beating fixed scheduling on both km and overflow events.
-YELLOW_TOLERANCE = 0.0
+# Calibrated by the V2.2 six-point marginal-detour frontier. The policy serves
+# a YELLOW site only when its added road distance per m³ is within this budget.
+DETOUR_BUDGET_M_PER_M3 = 0.0
 FALLBACK_COST_PER_M3_M = 1_200.0
 SIMULATION_DAYS = 30
 

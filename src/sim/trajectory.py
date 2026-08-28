@@ -14,11 +14,11 @@ import pandas as pd
 
 from src.config import (
     DEPOT_COORDS,
+    DETOUR_BUDGET_M_PER_M3,
     FALLBACK_COST_PER_M3_M,
     LANDFILL_COORDS,
     MAX_DUMP_TRIPS,
     SIMULATION_DAYS,
-    YELLOW_TOLERANCE,
 )
 from src.optimize.distances import DistanceMatrix, Point, get_matrix
 from src.optimize.solver import Plan, SolverParams, Truck, plan_routes
@@ -41,7 +41,7 @@ class TrajectoryParams:
     depot: Point = DEPOT_COORDS
     landfill: Point = LANDFILL_COORDS
     shift_duration_s: float = 8 * 3600.0
-    yellow_tolerance: float = YELLOW_TOLERANCE
+    detour_budget_m_per_m3: float = DETOUR_BUDGET_M_PER_M3
     reds_only: bool = False
     max_dump_trips: int = MAX_DUMP_TRIPS
     fallback_cost_per_m3_m: float = FALLBACK_COST_PER_M3_M
@@ -161,7 +161,7 @@ def solve_day(
         shift_duration_s=params.shift_duration_s,
         max_dump_trips=params.max_dump_trips,
         fallback_cost_per_m3_m=params.fallback_cost_per_m3_m,
-        yellow_tolerance=params.yellow_tolerance,
+        detour_budget_m_per_m3=params.detour_budget_m_per_m3,
         reds_only=params.reds_only,
         time_limit_s=params.solver_time_limit_s,
         solution_limit=params.solver_solution_limit,

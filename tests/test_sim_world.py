@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.sim.world import generate_world
+from src.sim.world import _select_sector, generate_world
 
 
 def mock_boundary() -> dict:
@@ -86,3 +86,44 @@ def test_world_contract_and_determinism() -> None:
     assert first["daily_fill_rate_pct"].between(3, 95).all()
     assert first["lat"].between(51.13, 51.22).all()
     assert first["lon"].between(71.34, 71.47).all()
+
+
+def test_default_sector_uses_residential_building_count() -> None:
+    payload = mock_osm_payload()
+    payload["elements"].extend(
+        [
+            {
+                "type": "node",
+                "id": 900,
+                "lat": 51.21,
+                "lon": 71.47,
+                "tags": {"place": "neighbourhood", "name": "Residential"},
+            },
+            *[
+                {
+                    "type": "node",
+                    "id": 910 + index,
+                    "lat": 51.209 + index * 0.0001,
+                    "lon": 71.469,
+                    "tags": {"building": "house"},
+                }
+                for index in range(3)
+            ],
+            *[
+                {
+                    "type": "node",
+                    "id": 920 + index,
+                    "lat": 51.18 + index * 0.0001,
+                    "lon": 71.42,
+                    "tags": {"building": "commercial"},
+                }
+                for index in range(20)
+            ],
+        ]
+    )
+    selected = _select_sector(
+        [(51.175, 71.405, "Жастар"), (51.21, 71.47, "Residential")],
+        payload["elements"],
+        None,
+    )
+    assert selected == "Residential"

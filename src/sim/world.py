@@ -78,22 +78,22 @@ def _select_sector(
     elements: list[dict],
     requested: str | None,
 ) -> str:
-    """Select an explicit sector or the OSM place with the densest nearby built fabric."""
+    """Select an explicit sector or the one with most residential buildings."""
     names = sorted({name for _, _, name in places})
     if requested:
         matches = [name for name in names if name.casefold() == requested.casefold()]
         if not matches:
             raise ValueError(f"Unknown OSM sector {requested!r}; available sectors: {', '.join(names)}")
         return matches[0]
-    density = {name: 0 for name in names}
+    residential_count = {name: 0 for name in names}
     for element in elements:
         tags = element.get("tags", {})
-        if not (tags.get("building") or tags.get("shop") or tags.get("office")):
+        if tags.get("building") not in {"apartments", "residential", "house", "detached"}:
             continue
         coord = _coordinate(element)
         if coord is not None:
-            density[_nearest_name(coord, places)] += 1
-    return max(names, key=lambda name: (density[name], name))
+            residential_count[_nearest_name(coord, places)] += 1
+    return max(names, key=lambda name: (residential_count[name], name))
 
 
 def _road_candidates(roads: list[dict], rng: np.random.Generator) -> Iterable[tuple[float, float, str]]:

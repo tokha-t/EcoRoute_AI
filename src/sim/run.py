@@ -14,6 +14,7 @@ from src.config import (
     CO2_KG_PER_LITER_DIESEL,
     DENSITY_KG_PER_L,
     DEPOT_COORDS,
+    DETOUR_BUDGET_M_PER_M3,
     FALLBACK_COST_PER_M3_M,
     FUEL_CONSUMPTION_LITERS_PER_KM,
     FUEL_COST_KZT_PER_LITER,
@@ -21,11 +22,11 @@ from src.config import (
     MAX_DUMP_TRIPS,
     MAX_INTERVAL_DAYS,
     SIMULATION_DAYS,
-    YELLOW_TOLERANCE,
 )
 from src.optimize.distances import DistanceMatrix, get_matrix
 from src.optimize.solver import Plan, Route, SolverParams, Truck, plan_routes
 from src.sim.fill import ClassificationParams, advance_day, classify, empty_sites
+from src.sim.provenance import area_type_mix_text, site_provenance_text
 from src.sim.world import generate_world
 
 Policy = Literal["fixed", "fixed_naive", "predictive", "predictive_reds_only"]
@@ -39,9 +40,11 @@ FIXED_INTERVAL_DAYS = {"multistorey": 1, "private": 3, "commercial": 1, "mixed":
 REPORT_DIR = Path(__file__).resolve().parents[2] / "reports"
 DEFAULT_REPORT_MD = REPORT_DIR / "simulation_30d.md"
 DEFAULT_REPORT_CSV = REPORT_DIR / "simulation_30d.csv"
-DEFAULT_SWEEP_CSV = REPORT_DIR / "yellow_tolerance_sweep.csv"
-DEFAULT_SWEEP_SVG = REPORT_DIR / "yellow_tolerance_frontier.svg"
-TOLERANCE_SWEEP = (0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0)
+DEFAULT_SWEEP_CSV = REPORT_DIR / "yellow_detour_budget_sweep.csv"
+DEFAULT_SWEEP_SVG = REPORT_DIR / "yellow_detour_frontier.svg"
+DETOUR_BUDGET_SWEEP = (0.0, 100.0, 200.0, 400.0, 800.0, 1600.0)
+REPORT_SOLVER_TIME_LIMIT_S = 5.0
+REPORT_SOLVER_SOLUTION_LIMIT = 100
 
 
 @dataclass(frozen=True)
@@ -66,7 +69,7 @@ class DailyRecord:
 
 @dataclass(frozen=True)
 class SweepSelection:
-    tolerance: float
+    detour_budget_m_per_m3: float
     dominates_fixed: bool
     reason: str
 
@@ -98,7 +101,10 @@ def _solver_frame(world: pd.DataFrame, mask: pd.Series) -> tuple[pd.DataFrame, l
 
 def _fixed_candidates(world: pd.DataFrame, day: int) -> tuple[pd.DataFrame, list[int]]:
     due = pd.Series(
-        [day % FIXED_INTERVAL_DAYS.get(str(area), 2) == 0 for area in world["area_type"]],
+        [
+            day - int(last_service_day) >= FIXED_INTERVAL_DAYS.get(str(area), 2)
+            for area, last_service_day in zip(world["area_type"], world["last_service_day"])
+        ],
         index=world.index,
     )
     sites, indices = _solver_frame(world, due)
@@ -281,7 +287,7 @@ def simulate(
     *,
     trucks: Sequence[Truck] | None = None,
     classification_params: ClassificationParams | None = None,
-    yellow_tolerance: float = YELLOW_TOLERANCE,
+    detour_budget_m_per_m3: float = DETOUR_BUDGET_M_PER_M3,
     matrix: DistanceMatrix | None = None,
 ) -> list[DailyRecord]:
     """Run one policy; stochastic accumulation is repeatable under ``seed``."""
@@ -307,9 +313,12 @@ def simulate(
             matrix=local_matrix,
             max_dump_trips=MAX_DUMP_TRIPS,
             fallback_cost_per_m3_m=FALLBACK_COST_PER_M3_M,
-            yellow_tolerance=yellow_tolerance,
+            detour_budget_m_per_m3=detour_budget_m_per_m3,
             reds_only=policy == "predictive_reds_only",
-            time_limit_s=0.5,
+            # Fixed solution-count termination makes the report independent
+            # of CPU speed; the wall-clock limit is only a safety valve.
+            time_limit_s=REPORT_SOLVER_TIME_LIMIT_S,
+            solution_limit=REPORT_SOLVER_SOLUTION_LIMIT,
         )
         if candidates.empty:
             plan = Plan([], [], [], 0.0, 0.0, "none", False, mode=policy)
@@ -320,6 +329,14 @@ def simulate(
         served_ids = [site_id for route in plan.routes for site_id in route.site_ids]
         state = empty_sites(state, served_ids, day)
         records.append(_daily_record(policy, day, before_service, state, plan))
+    if policy == "fixed":
+        violations = sum(record.max_interval_violations for record in records)
+        if violations:
+            raise RuntimeError(
+                "Fixed baseline is not max-interval compliant: "
+                f"{violations} violations with FIXED_INTERVAL_DAYS={FIXED_INTERVAL_DAYS} "
+                f"and MAX_INTERVAL_DAYS={MAX_INTERVAL_DAYS}."
+            )
     return records
 
 
@@ -348,65 +365,71 @@ def summarize(records: Sequence[DailyRecord], site_count: int) -> dict[str, floa
     }
 
 
-def select_yellow_tolerance(
+def select_detour_budget(
     sweep_summaries: dict[float, dict[str, float]],
     fixed_summary: dict[str, float],
 ) -> SweepSelection:
-    """Select the largest tolerance strictly improving fixed km and overflow."""
+    """Select the largest detour budget strictly improving fixed km and overflow."""
     dominating = [
-        tolerance
-        for tolerance, summary in sweep_summaries.items()
+        budget
+        for budget, summary in sweep_summaries.items()
         if summary["km_total"] < fixed_summary["km_total"]
         and summary["overflow_events"] < fixed_summary["overflow_events"]
     ]
     if dominating:
         chosen = max(dominating)
+        summary = sweep_summaries[chosen]
         return SweepSelection(
-            tolerance=chosen,
+            detour_budget_m_per_m3=chosen,
             dominates_fixed=True,
             reason=(
-                f"{chosen:g} is the largest tested tolerance below fixed on both "
-                "total distance and overflow events."
+                f"{chosen:g} m/m³ is the largest tested detour budget below fixed on both measures: "
+                f"{summary['km_total']:.1f} km and {summary['overflow_events']:.0f} overflow "
+                f"events versus fixed at {fixed_summary['km_total']:.1f} km and "
+                f"{fixed_summary['overflow_events']:.0f}."
             ),
         )
     chosen = min(
         sweep_summaries,
-        key=lambda tolerance: (sweep_summaries[tolerance]["km_total"], tolerance),
+        key=lambda budget: (sweep_summaries[budget]["km_total"], budget),
     )
+    summary = sweep_summaries[chosen]
     return SweepSelection(
-        tolerance=chosen,
+        detour_budget_m_per_m3=chosen,
         dominates_fixed=False,
         reason=(
-            "No tested tolerance beats fixed on both total distance and overflow events; "
-            f"{chosen:g} is the distance-minimising fallback."
+            "No tested detour budget beats fixed on both total distance and overflow events; "
+            f"{chosen:g} m/m³ is the distance-minimising fallback at {summary['km_total']:.1f} km "
+            f"and {summary['overflow_events']:.0f} overflow events (fixed: "
+            f"{fixed_summary['km_total']:.1f} km, {fixed_summary['overflow_events']:.0f})."
         ),
     )
 
 
-def run_tolerance_sweep(
+def run_detour_budget_sweep(
     world: pd.DataFrame,
     days: int = SIMULATION_DAYS,
     seed: int = 42,
     *,
     trucks: Sequence[Truck] | None = None,
     classification_params: ClassificationParams | None = None,
-    tolerances: Sequence[float] = TOLERANCE_SWEEP,
+    budgets: Sequence[float] = DETOUR_BUDGET_SWEEP,
     matrix: DistanceMatrix | None = None,
 ) -> dict[float, list[DailyRecord]]:
-    """Run all predictive tolerance candidates against identical daily fills."""
+    """Run all marginal-detour candidates against identical daily fills."""
     full_matrix = matrix or get_matrix(_world_points(world), timeout=0.5)
     return {
-        float(tolerance): simulate(
+        float(budget): simulate(
             world,
             "predictive",
             days,
             seed,
             trucks=trucks,
             classification_params=classification_params,
-            yellow_tolerance=float(tolerance),
+            detour_budget_m_per_m3=float(budget),
             matrix=full_matrix,
         )
-        for tolerance in tolerances
+        for budget in budgets
     }
 
 
@@ -422,7 +445,7 @@ def run_full_analysis(
     dict[float, dict[str, float]],
     SweepSelection,
 ]:
-    """Run baselines, sweep predictive tolerance, and choose the report default."""
+    """Run baselines, sweep marginal detour budgets, and choose the report default."""
     full_matrix = get_matrix(_world_points(world), timeout=0.5)
     baselines = {
         policy: simulate(
@@ -436,7 +459,7 @@ def run_full_analysis(
         )
         for policy in ("fixed", "fixed_naive")
     }
-    sweep_records = run_tolerance_sweep(
+    sweep_records = run_detour_budget_sweep(
         world,
         days,
         seed,
@@ -444,14 +467,12 @@ def run_full_analysis(
         classification_params=classification_params,
         matrix=full_matrix,
     )
-    sweep_summaries = {
-        tolerance: summarize(records, len(world)) for tolerance, records in sweep_records.items()
-    }
-    selection = select_yellow_tolerance(sweep_summaries, summarize(baselines["fixed"], len(world)))
+    sweep_summaries = {budget: summarize(records, len(world)) for budget, records in sweep_records.items()}
+    selection = select_detour_budget(sweep_summaries, summarize(baselines["fixed"], len(world)))
     return (
         {
             **baselines,
-            "predictive": sweep_records[selection.tolerance],
+            "predictive": sweep_records[selection.detour_budget_m_per_m3],
             "predictive_reds_only": [
                 replace(record, policy="predictive_reds_only") for record in sweep_records[0.0]
             ],
@@ -461,12 +482,21 @@ def run_full_analysis(
     )
 
 
-def _write_sweep_svg(sweep_summaries: dict[float, dict[str, float]], path: Path) -> Path:
+def _write_sweep_svg(
+    sweep_summaries: dict[float, dict[str, float]],
+    path: Path,
+    *,
+    selected_budget: float | None = None,
+    fixed_summary: dict[str, float] | None = None,
+) -> Path:
     """Write a dependency-free distance/overflow frontier chart."""
     width, height = 760, 430
     left, right, top, bottom = 80, 30, 40, 65
-    kms = [summary["km_total"] for summary in sweep_summaries.values()]
-    overflows = [summary["overflow_events"] for summary in sweep_summaries.values()]
+    summaries_for_scale = list(sweep_summaries.values())
+    if fixed_summary is not None:
+        summaries_for_scale.append(fixed_summary)
+    kms = [summary["km_total"] for summary in summaries_for_scale]
+    overflows = [summary["overflow_events"] for summary in summaries_for_scale]
     min_km, max_km = min(kms), max(kms)
     min_overflow, max_overflow = min(overflows), max(overflows)
 
@@ -474,16 +504,28 @@ def _write_sweep_svg(sweep_summaries: dict[float, dict[str, float]], path: Path)
         return (start + end) / 2 if high == low else start + (value - low) / (high - low) * (end - start)
 
     points = []
-    for tolerance, summary in sorted(sweep_summaries.items()):
+    for budget, summary in sorted(sweep_summaries.items()):
         x = scale(summary["km_total"], min_km, max_km, left, width - right)
         y = scale(summary["overflow_events"], min_overflow, max_overflow, height - bottom, top)
+        selected = selected_budget is not None and budget == selected_budget
         points.append(
-            f"<circle cx='{x:.1f}' cy='{y:.1f}' r='6' fill='#0ea5e9'>"
-            f"<title>t={tolerance:g}: {summary['km_total']:.1f} km, "
+            f"<circle cx='{x:.1f}' cy='{y:.1f}' r='{'9' if selected else '6'}' "
+            f"fill='{'#16a34a' if selected else '#0ea5e9'}'>"
+            f"<title>budget={budget:g} m/m³: {summary['km_total']:.1f} km, "
             f"{summary['overflow_events']:.0f} overflows</title></circle>"
             f"<text x='{x + 9:.1f}' y='{y - 7:.1f}' font-size='12'>"
-            f"t={tolerance:g} ({summary['km_total']:.0f}, "
+            f"{budget:g} ({summary['km_total']:.0f}, "
             f"{summary['overflow_events']:.0f})</text>"
+        )
+    if fixed_summary is not None:
+        x = scale(fixed_summary["km_total"], min_km, max_km, left, width - right)
+        y = scale(fixed_summary["overflow_events"], min_overflow, max_overflow, height - bottom, top)
+        points.append(
+            f"<rect x='{x - 6:.1f}' y='{y - 6:.1f}' width='12' height='12' fill='#dc2626'>"
+            f"<title>fixed: {fixed_summary['km_total']:.1f} km, "
+            f"{fixed_summary['overflow_events']:.0f} overflows</title></rect>"
+            f"<text x='{x + 9:.1f}' y='{y - 7:.1f}' font-size='12'>fixed "
+            f"({fixed_summary['km_total']:.0f}, {fixed_summary['overflow_events']:.0f})</text>"
         )
     svg = (
         f"<svg xmlns='http://www.w3.org/2000/svg' width='{width}' height='{height}' "
@@ -535,9 +577,14 @@ def write_comparison_report(
         "> **SIMULATED DATA.** This proves policy logic on a modeled Baikonur district; "
         "real savings must be measured during the pilot.",
         "",
-        f"World: {len(world)} sites in sector {sector}; "
-        f"real OSM records: {int(world['source_real'].sum())}; "
-        f"street-synthesized: {int((~world['source_real'].astype(bool)).sum())}.",
+        f"World: {len(world)} sites in sector {sector}.",
+        "",
+        f"**{site_provenance_text(world, 'ru')}**",
+        "",
+        f"Area-type composition: {area_type_mix_text(world)}.",
+        "",
+        "The fixed baseline is a compliant, idealised calendar. A real operator also reacts "
+        "to complaints, so actual current practice lies somewhere between fixed and predictive.",
         "",
         "Distance source: "
         + ", ".join(distance_sources or ["none"])
@@ -571,33 +618,57 @@ def write_comparison_report(
         value = summaries["predictive"][metric]
         delta = (value - fixed_value) / fixed_value * 100 if fixed_value else 0.0
         lines.append(f"| {metric} | {delta:+.1f}% |")
+    predictive = summaries["predictive"]
+    reds_only = summaries["predictive_reds_only"]
+    yellow_rule_active = any(
+        predictive[key] != reds_only[key] for key in ("km_total", "overflow_events", "sites_served")
+    )
+    lines.extend(
+        [
+            "",
+            (
+                "The selected predictive policy differs from predictive_reds_only: "
+                f"{predictive['sites_served'] - reds_only['sites_served']:+.0f} sites served, "
+                f"{predictive['km_total'] - reds_only['km_total']:+.1f} km, and "
+                f"{predictive['overflow_events'] - reds_only['overflow_events']:+.0f} overflow events."
+                if yellow_rule_active
+                else "**Yellow rule is inert at the selected default:** predictive and "
+                "predictive_reds_only are identical on distance, overflow, and sites served."
+            ),
+        ]
+    )
     if sweep_summaries is not None:
         sweep_rows = [
-            {"yellow_tolerance": tolerance, **summary}
-            for tolerance, summary in sorted(sweep_summaries.items())
+            {"detour_budget_m_per_m3": budget, **summary}
+            for budget, summary in sorted(sweep_summaries.items())
         ]
         pd.DataFrame(sweep_rows).to_csv(sweep_csv_path, index=False)
-        _write_sweep_svg(sweep_summaries, sweep_svg_path)
+        _write_sweep_svg(
+            sweep_summaries,
+            sweep_svg_path,
+            selected_budget=(selection.detour_budget_m_per_m3 if selection else None),
+            fixed_summary=baseline,
+        )
         lines.extend(
             [
                 "",
-                "## YELLOW_TOLERANCE trade-off sweep",
+                "## Marginal YELLOW detour-budget trade-off sweep",
                 "",
-                "![Distance versus overflow frontier](yellow_tolerance_frontier.svg)",
+                "![Distance versus overflow frontier](yellow_detour_frontier.svg)",
                 "",
-                "| tolerance | " + " | ".join(metrics) + " |",
+                "| detour_budget_m_per_m3 | " + " | ".join(metrics) + " |",
                 "|---:|" + "---:|" * len(metrics),
             ]
         )
-        for tolerance, summary in sorted(sweep_summaries.items()):
+        for budget, summary in sorted(sweep_summaries.items()):
             values = " | ".join(f"{summary[metric]:.2f}" for metric in metrics)
-            lines.append(f"| {tolerance:g} | {values} |")
+            lines.append(f"| {budget:g} | {values} |")
         if selection is not None:
             lines.extend(
                 [
                     "",
-                    f"**Selected default: `YELLOW_TOLERANCE = {selection.tolerance:g}`.** "
-                    + selection.reason,
+                    "**Selected default: `DETOUR_BUDGET_M_PER_M3 = "
+                    f"{selection.detour_budget_m_per_m3:g}`.** " + selection.reason,
                 ]
             )
     lines.append("")
@@ -612,7 +683,7 @@ def run_comparison(
     *,
     trucks: Sequence[Truck] | None = None,
     classification_params: ClassificationParams | None = None,
-    yellow_tolerance: float = YELLOW_TOLERANCE,
+    detour_budget_m_per_m3: float = DETOUR_BUDGET_M_PER_M3,
 ) -> dict[str, list[DailyRecord]]:
     full_matrix = get_matrix(_world_points(world), timeout=0.5)
     return {
@@ -623,7 +694,7 @@ def run_comparison(
             seed,
             trucks=trucks,
             classification_params=classification_params,
-            yellow_tolerance=yellow_tolerance,
+            detour_budget_m_per_m3=detour_budget_m_per_m3,
             matrix=full_matrix,
         )
         for policy in POLICIES

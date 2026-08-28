@@ -566,6 +566,47 @@ including the final polygon and depot legs.
 After S7a and S7b: regenerate reports/simulation_30d.* — all earlier KPI numbers used
 haversine distances and are void.
 
+### S8 — V2.2: fair baseline, real tolerance frontier, residential sector
+
+Read docs/SPEC_V2_SIMULATION.md §8ter (added 2026-08-29). One session, four fixes.
+
+```text
+1. FAIR BASELINE (critical — the current "-100% violations" is an off-by-one).
+   FIXED_INTERVAL_DAYS["private"]=3 equals MAX_INTERVAL_DAYS=3, and the KPI counts
+   violations with >=, so the baseline is marked late every time it runs on schedule.
+   - KPI counting uses days_since_service > MAX_INTERVAL_DAYS (strictly greater).
+   - Classification rule §4.2.1 keeps >= for promotion to RED (due != late). Do not change it.
+   - New invariant test: the fixed baseline produces ZERO max-interval violations by
+     construction. If it does not, fail the run with a message naming the misconfiguration.
+
+2. REAL TOLERANCE FRONTIER (critical — the knob is saturated; predictive == reds_only today).
+   - Re-sweep YELLOW_TOLERANCE over {0.0, 0.02, 0.05, 0.08, 0.12, 0.16, 0.20, 0.25, 0.5, 1.0}.
+   - If the result is still a cliff rather than a curve, switch the yellow rule to an explicit
+     marginal detour budget: serve a yellow site when
+     insertion_cost_m <= DETOUR_BUDGET_M_PER_M3 * volume_m3,
+     and sweep DETOUR_BUDGET_M_PER_M3 over {0, 100, 200, 400, 800, 1600}.
+     Keep the two-pass reference-cost machinery only if it still earns its place.
+   - The report must justify the chosen default in one sentence naming its km and overflow cost,
+     and must state explicitly when predictive and predictive_reds_only are identical rather
+     than printing two identical columns silently.
+
+3. RESIDENTIAL SECTOR (the current default picked Өндіріс, an industrial zone, while the fill
+   model encodes residential rhythms).
+   - Rank candidate sectors by count of building=apartments|residential|house, not raw density.
+   - Report and UI name the sector and its area_type composition.
+
+4. SYNTHETIC SHARE VISIBLE (only 13 of 250 sites are real OSM records after sector filtering).
+   - Line "Реальных площадок из OSM: N из M; остальные размещены на реальных улицах."
+     in the map legend, the report header, and exported route sheets.
+
+Then regenerate reports/simulation_30d.* and the sweep artifacts.
+
+Do NOT weaken the max-interval RED promotion, do NOT tune a constant by hand to make a
+number look better, do NOT change the road cache.
+Verify: pytest green; ruff clean; baseline violations == 0; sweep shows a curve;
+report names the chosen default and its trade-off.
+```
+
 ---
 
 ## Extras (only when needed)

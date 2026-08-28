@@ -39,7 +39,7 @@ def solve(
     capacity: float = 5_000,
     max_dumps: int = 4,
     shift_duration_s: float = 100_000,
-    yellow_tolerance: float = 1.0,
+    detour_budget_m_per_m3: float = 1_200.0,
 ):
     depot = (0.0, 0.0)
     landfill = (0.0, 500.0)
@@ -50,7 +50,7 @@ def solve(
         matrix=line_matrix(points),
         max_dump_trips=max_dumps,
         shift_duration_s=shift_duration_s,
-        yellow_tolerance=yellow_tolerance,
+        detour_budget_m_per_m3=detour_budget_m_per_m3,
         time_limit_s=0.25,
     )
     return plan_routes(frame, [Truck("T1", capacity_kg=capacity)], params)

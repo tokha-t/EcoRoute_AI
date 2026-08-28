@@ -19,7 +19,10 @@ TRANSLATIONS = {
     "red_threshold": {"ru": "Порог RED (%)", "en": "RED threshold (%)"},
     "horizon": {"ru": "Горизонт прогноза (дни)", "en": "Planning horizon (days)"},
     "max_interval": {"ru": "Максимальный интервал (дни)", "en": "Maximum interval (days)"},
-    "yellow_tolerance": {"ru": "Готовность собирать YELLOW", "en": "YELLOW collection tolerance"},
+    "detour_budget": {
+        "ru": "Лимит детура YELLOW (м/м³)",
+        "en": "YELLOW detour budget (m/m³)",
+    },
     "day": {"ru": "День симуляции", "en": "Simulation day"},
     "next_day": {"ru": "Следующий день", "en": "Next day"},
     "run_30": {"ru": "Прогон 30 дней", "en": "Run 30 days"},
@@ -45,11 +48,8 @@ TRANSLATIONS = {
         "ru": "прямые линии — OSRM недоступен",
         "en": "straight lines — OSRM unavailable",
     },
-    "world_legend": {
-        "ru": "Координаты: {real} реальных OSM, {synthetic} синтезировано на реальных улицах.",
-        "en": "Coordinates: {real} real OSM, {synthetic} synthesized on real streets.",
-    },
     "sector": {"ru": "сектор", "en": "sector"},
+    "area_mix": {"ru": "состав типов", "en": "area-type mix"},
     "infeasible": {"ru": "План невыполним", "en": "Plan is infeasible"},
     "fix": {
         "ru": "Решение: добавьте машину, увеличьте смену/вместимость или снизьте порог.",
@@ -64,7 +64,7 @@ TRANSLATIONS = {
         "ru": "Печатный маршрутный лист",
         "en": "Printable route sheet",
     },
-    "selected_tolerance": {"ru": "Выбранный tolerance", "en": "Selected tolerance"},
+    "selected_budget": {"ru": "Выбранный лимит детура", "en": "Selected detour budget"},
     "selection_dominates": {
         "ru": "Это максимальное проверенное значение, которое лучше фиксированного графика и по пробегу, и по переполнениям.",
         "en": "This is the largest tested value below fixed on both total distance and overflow events.",

@@ -9,6 +9,7 @@ from html import escape
 import pandas as pd
 
 from src.optimize.solver import Plan
+from src.sim.provenance import site_provenance_text
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,7 @@ def build_route_sheet(
         "manual_exclude": "исключён диспетчером" if lang == "ru" else "dispatcher excluded",
         "manual_include": "включён диспетчером" if lang == "ru" else "dispatcher included",
     }
+    provenance = site_provenance_text(sites_df, lang)
     rows: list[dict] = []
     shift_start = datetime.combine(service_date, time(hour=8))
     routes = [route for route in plan.routes if truck_id is None or route.truck_id == truck_id]
@@ -74,6 +76,7 @@ def build_route_sheet(
                 "leg_km": 0.0,
                 "cumulative_km": 0.0,
                 "cumulative_load_kg": 0.0,
+                "data_provenance": provenance,
             }
         )
         for sequence, stop in enumerate(route.ordered_stops, start=1):
@@ -117,6 +120,7 @@ def build_route_sheet(
                     "cumulative_load_kg": (
                         round(cumulative_load[sequence], 1) if len(cumulative_load) > sequence else ""
                     ),
+                    "data_provenance": provenance,
                 }
             )
         return_sequence = len(route.ordered_stops) + 1
@@ -142,6 +146,7 @@ def build_route_sheet(
                 "leg_km": round((final_km - prior_km) / 1000, 2),
                 "cumulative_km": round(final_km / 1000, 2),
                 "cumulative_load_kg": round(cumulative_load[-1], 1) if cumulative_load else 0.0,
+                "data_provenance": provenance,
             }
         )
     for decision in plan.skipped_yellow:
@@ -165,6 +170,7 @@ def build_route_sheet(
                 "leg_km": "",
                 "cumulative_km": "",
                 "cumulative_load_kg": "",
+                "data_provenance": provenance,
             }
         )
     represented = {str(row["site_id"]) for row in rows if row["site_id"]}
@@ -191,6 +197,7 @@ def build_route_sheet(
                 "leg_km": "",
                 "cumulative_km": "",
                 "cumulative_load_kg": "",
+                "data_provenance": provenance,
             }
         )
     frame = pd.DataFrame(rows)
@@ -230,6 +237,7 @@ def build_route_sheet(
             "leg_km": "Участок, км",
             "cumulative_km": "Пробег, км",
             "cumulative_load_kg": "Загрузка, кг",
+            "data_provenance": "Происхождение данных",
         }
         if lang == "ru"
         else {}
@@ -243,6 +251,7 @@ def build_route_sheet(
         "th,td{border:1px solid #bbb;padding:5px;text-align:left}"
         "h1{font-size:22px}.signatures{margin-top:32px}</style></head><body>"
         f"<h1>{escape(title)} — {service_date.isoformat()}</h1>"
+        + f"<p><strong>{escape(provenance)}</strong></p>"
         + printable_frame.to_html(index=False, escape=True)
         + f"<div class='signatures'>{signatures}</div></body></html>"
     )

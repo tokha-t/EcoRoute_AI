@@ -25,12 +25,12 @@ from src.app_logic import (
 from src.config import (
     DEPOT_COORDS,
     DEPOT_COORDS_ASSUMED,
+    DETOUR_BUDGET_M_PER_M3,
     LANDFILL_COORDS,
     MAX_INTERVAL_DAYS,
     PLANNING_HORIZON_DAYS,
     RED_THRESHOLD,
     YELLOW_THRESHOLD,
-    YELLOW_TOLERANCE,
 )
 from src.data_generator import (
     ASTANA_LATITUDE,
@@ -64,6 +64,7 @@ from src.reports.route_sheet import build_route_sheet
 from src.routing import compare_routes
 from src.savings import calculate_savings
 from src.sim.fill import ClassificationParams
+from src.sim.provenance import area_type_mix_text, site_provenance_text
 from src.sim.run import (
     DEFAULT_REPORT_CSV,
     DEFAULT_REPORT_MD,
@@ -896,7 +897,7 @@ def render_v2_simulation(
     lang: str,
     policy_name: str,
     classification_params: ClassificationParams,
-    yellow_tolerance: float,
+    detour_budget_m_per_m3: float,
     n_trucks: int,
     truck_capacity_kg: float,
     shift_hours: float,
@@ -918,7 +919,7 @@ def render_v2_simulation(
         depot=depot,
         landfill=LANDFILL_COORDS,
         shift_duration_s=shift_hours * 3600,
-        yellow_tolerance=yellow_tolerance,
+        detour_budget_m_per_m3=detour_budget_m_per_m3,
         reds_only=reds_only,
     )
 
@@ -1052,15 +1053,10 @@ def render_v2_simulation(
         else "route_source_straight"
     )
     route_label = t(source_key, lang)
-    real_count = int(classified["source_real"].sum())
     st.caption(
-        t(
-            "world_legend",
-            lang,
-            real=real_count,
-            synthetic=len(classified) - real_count,
-        )
+        site_provenance_text(classified, lang)
         + f" · {t('sector', lang)}: {classified['sector'].iloc[0]}"
+        + f" · {t('area_mix', lang)}: {area_type_mix_text(classified)}"
         + f" · {route_label}"
     )
     stretch_plotly_chart(map_figure)
@@ -1167,18 +1163,21 @@ def render_v2_simulation(
         selection = st.session_state.get("v2_sweep_selection")
         if sweep_summaries and selection:
             selection_key = "selection_dominates" if selection.dominates_fixed else "selection_fallback"
-            st.caption(f"{t('selected_tolerance', lang)}: {selection.tolerance:g}. {t(selection_key, lang)}")
+            st.caption(
+                f"{t('selected_budget', lang)}: "
+                f"{selection.detour_budget_m_per_m3:g} м/м³. {t(selection_key, lang)}"
+            )
             sweep_frame = pd.DataFrame(
                 [
-                    {"yellow_tolerance": tolerance, **summary}
-                    for tolerance, summary in sorted(sweep_summaries.items())
+                    {"detour_budget_m_per_m3": budget, **summary}
+                    for budget, summary in sorted(sweep_summaries.items())
                 ]
             )
             frontier = px.scatter(
                 sweep_frame,
                 x="km_total",
                 y="overflow_events",
-                text="yellow_tolerance",
+                text="detour_budget_m_per_m3",
                 title=t("frontier", lang),
             )
             frontier.update_traces(textposition="top center", marker={"size": 11})
@@ -1203,7 +1202,7 @@ def render_v2_simulation(
             download_3.download_button(
                 t("download_sweep", lang),
                 DEFAULT_SWEEP_CSV.read_bytes(),
-                file_name="yellow_tolerance_sweep.csv",
+                file_name="yellow_detour_budget_sweep.csv",
                 mime="text/csv",
             )
 
@@ -1239,7 +1238,7 @@ with st.sidebar:
     red_threshold = RED_THRESHOLD
     planning_horizon = PLANNING_HORIZON_DAYS
     max_interval = MAX_INTERVAL_DAYS
-    yellow_tolerance = YELLOW_TOLERANCE
+    detour_budget_m_per_m3 = DETOUR_BUDGET_M_PER_M3
     depot_lat, depot_lon = DEPOT_COORDS
     if mode == MODE_SIMULATION:
         policy_name = st.radio(
@@ -1251,7 +1250,13 @@ with st.sidebar:
         red_threshold = st.slider(t("red_threshold", lang), yellow_threshold + 1, 100, int(RED_THRESHOLD))
         planning_horizon = st.slider(t("horizon", lang), 1, 3, PLANNING_HORIZON_DAYS)
         max_interval = st.slider(t("max_interval", lang), 1, 7, MAX_INTERVAL_DAYS)
-        yellow_tolerance = st.slider(t("yellow_tolerance", lang), 0.0, 2.0, float(YELLOW_TOLERANCE), 0.25)
+        detour_budget_m_per_m3 = st.slider(
+            t("detour_budget", lang),
+            0.0,
+            1600.0,
+            float(DETOUR_BUDGET_M_PER_M3),
+            100.0,
+        )
         with st.expander("Парк (предположительно)" if lang == "ru" else "Depot (assumed)"):
             st.caption(
                 "Изменение координат требует дорожного кэша с этой точкой."
@@ -1332,7 +1337,7 @@ render_v2_simulation(
         planning_horizon_days=int(planning_horizon),
         max_interval_days=int(max_interval),
     ),
-    yellow_tolerance=float(yellow_tolerance),
+    detour_budget_m_per_m3=float(detour_budget_m_per_m3),
     n_trucks=int(n_trucks),
     truck_capacity_kg=float(truck_capacity_kg),
     shift_hours=float(shift_hours),

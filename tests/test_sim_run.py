@@ -4,10 +4,11 @@ from pathlib import Path
 
 from src.optimize.distances import DistanceMatrix
 from src.sim.run import (
+    DETOUR_BUDGET_SWEEP,
     POLICIES,
     run_comparison,
     run_full_analysis,
-    select_yellow_tolerance,
+    select_detour_budget,
     summarize,
     write_comparison_report,
 )
@@ -40,6 +41,7 @@ def test_short_comparison_and_report_safety_kpis(tmp_path: Path, monkeypatch) ->
     assert set(results) == set(POLICIES)
     assert all(len(records) == 4 for records in results.values())
     assert sum(record.max_interval_violations for record in results["predictive"]) == 0
+    assert sum(record.max_interval_violations for record in results["fixed"]) == 0
     assert sum(record.overflow_events for record in results["predictive"]) <= sum(
         record.overflow_events for record in results["fixed"]
     )
@@ -52,10 +54,15 @@ def test_short_comparison_and_report_safety_kpis(tmp_path: Path, monkeypatch) ->
     assert "overflow_events" in text
     assert "max_interval_violations" in text
     assert "SIMULATED DATA" in text
+    assert "compliant, idealised calendar" in text
+    assert "Реальных площадок из OSM:" in text
+    assert "Area-type composition:" in text
     assert csv.exists()
 
 
-def test_tolerance_sweep_report_and_selection_are_reproducible(tmp_path: Path, monkeypatch) -> None:
+def test_detour_budget_sweep_report_and_selection_are_reproducible(
+    tmp_path: Path, monkeypatch
+) -> None:
     world = generate_world(
         seed=4,
         n_sites=18,
@@ -65,7 +72,8 @@ def test_tolerance_sweep_report_and_selection_are_reproducible(tmp_path: Path, m
     matrix = matrix_for_world(world)
     monkeypatch.setattr("src.sim.run.get_matrix", lambda *args, **kwargs: matrix)
     results, sweep, selection = run_full_analysis(world, days=2, seed=11)
-    assert selection == select_yellow_tolerance(sweep, summarize(results["fixed"], len(world)))
+    assert tuple(sweep) == DETOUR_BUDGET_SWEEP
+    assert selection == select_detour_budget(sweep, summarize(results["fixed"], len(world)))
     markdown = tmp_path / "simulation.md"
     csv = tmp_path / "simulation.csv"
     sweep_csv = tmp_path / "sweep.csv"
@@ -81,7 +89,7 @@ def test_tolerance_sweep_report_and_selection_are_reproducible(tmp_path: Path, m
         sweep_svg_path=sweep_svg,
     )
     text = markdown.read_text(encoding="utf-8")
-    assert "YELLOW_TOLERANCE trade-off sweep" in text
+    assert "Marginal YELLOW detour-budget trade-off sweep" in text
     assert "Selected default" in text
     assert selection.reason in text
     assert sweep_csv.exists()

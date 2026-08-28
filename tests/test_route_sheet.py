@@ -21,6 +21,7 @@ def test_route_sheet_preserves_order_and_final_landfill() -> None:
                 "address": "ул. Тестовая, 1",
                 "containers": 1,
                 "reason": "high_fill",
+                "source_real": True,
             }
         ]
     )
@@ -53,6 +54,8 @@ def test_route_sheet_preserves_order_and_final_landfill() -> None:
     assert plan.routes[0].ordered_stops[-1] == "LANDFILL"
     assert "RED-1" in sheet.html
     assert "Водитель" in sheet.html
+    assert "Реальных площадок из OSM: 1 из 1" in sheet.html
+    assert sheet.rows["data_provenance"].str.contains("Реальных площадок из OSM").all()
 
 
 def test_route_sheet_marks_manual_exclusion() -> None:
@@ -72,3 +75,21 @@ def test_route_sheet_marks_manual_exclusion() -> None:
     assert sheet.rows.loc[0, "status"] == "исключён диспетчером"
     assert sheet.rows.loc[0, "manual_override"] == "exclude"
     assert "S1" in sheet.html
+
+
+def test_route_sheet_switches_to_operator_provenance() -> None:
+    sites = pd.DataFrame(
+        [
+            {
+                "site_id": "S1",
+                "address": "Адрес",
+                "containers": 1,
+                "fill_pct": 50,
+                "klass": "YELLOW",
+                "source_operator": True,
+            }
+        ]
+    )
+    plan = Plan([], [], [], 0, 0, "road_cache", False, manual_overrides={"S1": "exclude"})
+    sheet = build_route_sheet(plan, sites)
+    assert "Данные оператора: 1 из 1" in sheet.html

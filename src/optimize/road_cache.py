@@ -1,4 +1,4 @@
-"""Load and validate the committed V2.1 road-distance artifact once per process."""
+"""Load and validate the committed V2 road-distance artifact once per process."""
 
 from __future__ import annotations
 
