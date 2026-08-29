@@ -4,7 +4,7 @@
 
 EcoRoute AI simulates how quickly collection sites fill, classifies mandatory and opportunistic stops, and builds capacity- and shift-safe truck routes with landfill dump trips. The current 250-site pilot world is polygon-validated inside the residential `Жастар` catchment and Astana's multi-part Baikonur district boundary.
 
-🔗 **Live V2.2 demo:** [ecoroute-ai-baikonur.streamlit.app](https://ecoroute-ai-baikonur.streamlit.app/)  ·  🏙️ **Built for:** Astana Innovations Accelerator — Ecology & Urban Environment
+🔗 **Live V2.2.2 demo:** [ecoroute-ai-baikonur.streamlit.app](https://ecoroute-ai-baikonur.streamlit.app/)  ·  🏙️ **Built for:** Astana Innovations Accelerator — Ecology & Urban Environment
 
 ![EcoRoute AI dashboard](assets/screenshots/dashboard.png)
 
