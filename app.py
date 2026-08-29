@@ -1305,8 +1305,8 @@ with st.sidebar:
             """
             <div class="sidebar-note">
                 <strong>Смоделированный район</strong><br>
-                250 площадок в выбранном секторе района Байқоңыр. Все координаты находятся
-                внутри административной границы OSM; темпы накопления
+                Замороженная выборка из 250 площадок внутри административной границы
+                района Байқоңыр; границы жилого сектора не подтверждены. Темпы накопления
                 синтетические; результат не является измеренной экономией.
             </div>
             """
@@ -1314,9 +1314,9 @@ with st.sidebar:
             else """
             <div class="sidebar-note">
                 <strong>Modeled district</strong><br>
-                250 sites in the selected Baikonur sector. Every coordinate is inside the OSM
-                administrative boundary. All accumulation rates are synthetic;
-                this is not measured savings.
+                Frozen 250-site sample inside the Baikonur administrative boundary;
+                residential-sector boundaries are not validated. All accumulation rates
+                are synthetic; this is not measured savings.
             </div>
             """
         )
