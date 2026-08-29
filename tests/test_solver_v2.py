@@ -100,6 +100,21 @@ def test_yellow_two_pass_on_path_far_small_and_far_large() -> None:
     assert "FAR_LARGE" in solve(large_frame).served_yellow
 
 
+def test_yellow_budget_is_a_hard_insertion_cost_gate() -> None:
+    frame = sites(
+        [
+            ("R", 0, 2000, 1000, 70, "RED"),
+            ("NEAR", 100, 1000, 1000, 100, "YELLOW"),
+        ]
+    )
+    low_budget = solve(frame, detour_budget_m_per_m3=5.0)
+    high_budget = solve(frame, detour_budget_m_per_m3=20.0)
+    assert "NEAR" not in low_budget.served_yellow
+    assert "NEAR" in high_budget.served_yellow
+    skipped = {decision.site_id: decision for decision in low_budget.skipped_yellow}
+    assert skipped["NEAR"].insertion_cost_m > skipped["NEAR"].penalty_m
+
+
 def test_named_infeasibility_for_single_red() -> None:
     frame = sites([("TOO_HEAVY", 0, 1000, 10000, 100, "RED")])
     plan = solve(frame, capacity=500)

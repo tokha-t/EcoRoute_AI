@@ -1264,7 +1264,7 @@ with st.sidebar:
             0.0,
             1600.0,
             float(DETOUR_BUDGET_M_PER_M3),
-            100.0,
+            5.0,
         )
         with st.expander("Парк (предположительно)" if lang == "ru" else "Depot (assumed)"):
             st.caption(

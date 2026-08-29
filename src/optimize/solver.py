@@ -458,7 +458,18 @@ def _plan_v2(sites_df: pd.DataFrame, trucks: Sequence[Truck], params: SolverPara
             mode=mode,
         )
 
-    penalties = {node: volumes[node - 1] * params.detour_budget_m_per_m3 for node in yellow_nodes}
+    penalties: dict[int, float] = {}
+    for node in yellow_nodes:
+        penalty = volumes[node - 1] * params.detour_budget_m_per_m3
+        insertion = min(
+            (_insertion_cost(path, node, matrix)[0] for path in red_paths),
+            default=matrix.meters[0][node] + matrix.meters[node][0],
+        )
+        # Enforce the dispatcher-facing contract before the global solve. A
+        # positive disjunction penalty alone can leave an over-budget YELLOW
+        # node in an early incumbent when the report solver stops after a
+        # deterministic solution count.
+        penalties[node] = penalty if insertion <= penalty + 1e-9 else 0.0
     pass_two = _solve_v2_ortools(sites, loads, trucks, matrix, params, penalties)
     if pass_two is None:
         return _v2_empty_plan(

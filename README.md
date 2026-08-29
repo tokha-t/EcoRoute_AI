@@ -4,7 +4,7 @@
 
 EcoRoute AI simulates how quickly collection sites fill, classifies mandatory and opportunistic stops, and builds capacity- and shift-safe truck routes with landfill dump trips. The current 250-site pilot world is polygon-validated inside the residential `Жастар` catchment and Astana's multi-part Baikonur district boundary.
 
-🔗 **Live V2.2.2 demo:** [ecoroute-ai-baikonur.streamlit.app](https://ecoroute-ai-baikonur.streamlit.app/)  ·  🏙️ **Built for:** Astana Innovations Accelerator — Ecology & Urban Environment
+🔗 **Live V2.3 demo:** [ecoroute-ai-baikonur.streamlit.app](https://ecoroute-ai-baikonur.streamlit.app/)  ·  🏙️ **Built for:** Astana Innovations Accelerator — Ecology & Urban Environment
 
 ![EcoRoute AI dashboard](assets/screenshots/dashboard.png)
 
@@ -31,30 +31,31 @@ A dispatcher sees the full plan on one map before the shift, tunes how aggressiv
 |---|---|
 | World | 250 sites in the residential `Жастар` catchment; 250/250 inside both the committed sector polygon and Baikonur district |
 | Sector selection | Ranked first with 119 nearby `building=apartments|residential|house` records |
-| Area-type mix | commercial 45.6%, mixed 35.2%, private 12.0%, multistorey 7.2% — 54.4% residential/mixed |
+| Area-type mix | mixed 77.6%, multistorey 19.6%, private 2.8%, commercial 0% — 100% residential/mixed |
 | Coordinate provenance | **5 of 250 real OSM waste records; the other 245 are placed on real streets** |
 | Distance source | Committed OSRM road cache: full 252×252 matrix, 100% of default 30-day route edges covered offline |
 | Predictive max-interval violations | 0 |
 | Fixed max-interval violations | 0 — the baseline is now a compliant, idealised calendar |
-| Predictive overflow events vs fixed | 214 vs 324 (-34.0%) |
-| Automatically selected YELLOW detour budget | 0 m/m³; it is the only tested point improving both distance and overflow, so the report explicitly flags the yellow rule as inert |
+| Predictive overflow events vs fixed | 153 vs 399 (-61.7%) |
+| Automatically selected YELLOW detour budget | 0 m/m³; no nonzero tested point improves both distance and overflow, so the report explicitly flags the yellow rule as inert |
+| Fleet adequacy | No tested operating point reaches zero overflow; the best records 124 events (16.53 per 1,000 site-days) |
 
 Policy comparison (same four-truck fleet and accumulation sequence):
 
 | Policy | Distance | Overflow events | Max-interval violations |
 |---|---:|---:|---:|
-| Fixed | 3,871 km | 324 | 0 |
-| Predictive, selected detour budget 0 m/m³ | 3,463 km | 214 | 0 |
-| Predictive, detour budget 100 m/m³ | 4,579 km | 170 | 0 |
+| Fixed | 3,629 km | 399 | 0 |
+| Predictive, selected detour budget 0 m/m³ | 3,039 km | 153 | 0 |
+| Predictive, detour budget 100 m/m³ | 3,735 km | 144 | 0 |
 
-> Every KPI above is **simulated**. The run demonstrates policy behavior on a polygon-validated residential catchment; it does not estimate measured Astana savings. V2.2 first tested the denser 0–0.25 tolerance range, confirmed that it was saturated, then switched to the interpretable `{0, 100, 200, 400, 800, 1600}` m/m³ detour frontier required by the specification. The selected point drives 10.5% less distance and records 34.0% fewer overflow events than the charitable fixed baseline. Because that point serves no opportunistic YELLOW sites, the report says so plainly rather than claiming that rule contributes to the result.
+> Every KPI above is **simulated**. The run demonstrates policy behavior on a polygon-validated residential catchment; it does not estimate measured Astana savings. V2.3 enforces the detour budget as a hard per-site insertion-cost gate and samples `{0, 5, 10, 20, 30, 50, 75, 100, 400, 1600}` m/m³. This exposes a real curve instead of the former all-or-nothing plateau. The selected point drives 16.3% less distance and records 61.7% fewer overflow events than the charitable fixed baseline. Because no nonzero budget dominates fixed on both measures, the selected policy serves no opportunistic YELLOW sites and the report says so plainly.
 
 ## Key features
 
 - Authoritative cached multi-part OSM district boundary, including detached polygons; no bbox fallback
 - Deterministic 250-site world with every site validated inside both the selected residential-sector polygon and district; generation ranks sectors by residential-building count and supports `--sector`
 - Exact RED/YELLOW/GREEN classification with max-interval precedence
-- Two-pass OR-Tools routing with an explainable marginal YELLOW detour budget in metres per m³
+- Two-pass OR-Tools routing with a hard, explainable marginal YELLOW insertion-cost gate in metres per m³
 - Repeatable landfill dump visits, mandatory empty return, capacity, and shift enforcement
 - Build-time OSRM artifact with exact road distances and compressed street geometry; no routing server required in production
 - Real OSM landfill plus an editable, explicitly assumed depot that must be present in the road cache

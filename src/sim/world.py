@@ -31,6 +31,9 @@ MIN_SITE_SPACING_M = 60.0
 CAPACITY_OPTIONS = (120, 240, 660, 1100)
 SECTOR_PLACE_TYPES = {"suburb", "neighbourhood", "quarter"}
 RESIDENTIAL_RANK_BUILDINGS = {"apartments", "residential", "house"}
+COMMERCIAL_BUILDINGS = {"commercial", "retail", "office", "supermarket", "kiosk", "hotel"}
+APARTMENT_BUILDINGS = {"apartments", "residential"}
+PRIVATE_BUILDINGS = {"house", "detached", "semidetached_house", "terrace"}
 
 
 @dataclass(frozen=True)
@@ -310,24 +313,46 @@ def _road_candidates(roads: list[dict], rng: np.random.Generator) -> Iterable[tu
             return
 
 
-def _area_type(point: tuple[float, float], features: list[tuple[float, float, dict]]) -> str:
+def _normalise_street_name(value: Any) -> str:
+    return " ".join(str(value or "").casefold().split())
+
+
+def _area_type(
+    point: tuple[float, float],
+    features: list[tuple[float, float, dict]],
+    residential_streets: set[str] | None = None,
+) -> str:
+    """Classify local land use without treating ground-floor shops as a commercial district."""
     nearby = [tags for lat, lon, tags in features if haversine_meters(point, (lat, lon)) <= 180]
-    commercial = sum(
-        bool(tags.get("shop") or tags.get("office") or tags.get("building") == "commercial")
+    tagged_buildings = [tags for tags in nearby if tags.get("building")]
+    commercial_pois = sum(bool(tags.get("shop") or tags.get("office")) for tags in nearby)
+    commercial_buildings = sum(
+        tags.get("building") in COMMERCIAL_BUILDINGS
+        or bool(tags.get("building") and (tags.get("shop") or tags.get("office")))
+        for tags in tagged_buildings
+    )
+    apartments = sum(tags.get("building") in APARTMENT_BUILDINGS for tags in nearby)
+    houses = sum(tags.get("building") in PRIVATE_BUILDINGS for tags in nearby)
+    street_names = residential_streets or set()
+    generic_residential = sum(
+        tags.get("building") == "yes"
+        and _normalise_street_name(tags.get("addr:street")) in street_names
         for tags in nearby
     )
-    apartments = sum(tags.get("building") in {"apartments", "residential"} for tags in nearby)
-    houses = sum(tags.get("building") in {"house", "detached"} for tags in nearby)
-    if commercial > apartments + houses:
+    commercial_share = commercial_buildings / len(tagged_buildings) if tagged_buildings else 0.0
+    if commercial_pois >= 3 and commercial_share >= 0.60:
         return "commercial"
     if apartments and houses:
         return "mixed"
     if apartments:
         return "multistorey"
+    if houses and generic_residential:
+        return "mixed"
     if houses:
         return "private"
-    if commercial:
-        return "commercial"
+    # Generic buildings on named residential streets are positive residential
+    # evidence, but not enough to invent a more specific housing typology.
+    # Sparse or conflicting commercial evidence is likewise reported as mixed.
     return "mixed"
 
 
@@ -373,6 +398,11 @@ def generate_world(
             for point in element["geometry"]
         )
     ]
+    residential_streets = {
+        _normalise_street_name(element.get("tags", {}).get("name"))
+        for element in roads
+        if element.get("tags", {}).get("name")
+    }
     waste = [
         element
         for element in sector_elements
@@ -447,7 +477,7 @@ def generate_world(
             )
             street, house = nearest_street, nearest_house
         address = f"ул. {street}{', ' + house if house else ''}, район {district}" if street else district
-        area = _area_type(point, features)
+        area = _area_type(point, features, residential_streets)
         containers = int(rng.integers(1, 7))
         container_liters = int(rng.choice(CAPACITY_OPTIONS, p=[0.08, 0.17, 0.30, 0.45]))
         capacity = containers * container_liters

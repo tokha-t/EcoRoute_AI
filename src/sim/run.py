@@ -47,7 +47,7 @@ DEFAULT_REPORT_MD = REPORT_DIR / "simulation_30d.md"
 DEFAULT_REPORT_CSV = REPORT_DIR / "simulation_30d.csv"
 DEFAULT_SWEEP_CSV = REPORT_DIR / "yellow_detour_budget_sweep.csv"
 DEFAULT_SWEEP_SVG = REPORT_DIR / "yellow_detour_frontier.svg"
-DETOUR_BUDGET_SWEEP = (0.0, 100.0, 200.0, 400.0, 800.0, 1600.0)
+DETOUR_BUDGET_SWEEP = (0.0, 5.0, 10.0, 20.0, 30.0, 50.0, 75.0, 100.0, 400.0, 1600.0)
 REPORT_SOLVER_TIME_LIMIT_S = 5.0
 REPORT_SOLVER_SOLUTION_LIMIT = 100
 
@@ -77,6 +77,35 @@ class SweepSelection:
     detour_budget_m_per_m3: float
     dominates_fixed: bool
     reason: str
+
+
+@dataclass(frozen=True)
+class FleetAdequacy:
+    adequate_for_zero_overflow: bool
+    best_budget_m_per_m3: float
+    overflow_events: float
+    overflow_site_days: float
+
+
+def assess_fleet_adequacy(sweep_summaries: dict[float, dict[str, float]]) -> FleetAdequacy:
+    """Report whether any tested operating point reaches zero overflow."""
+    if not sweep_summaries:
+        raise ValueError("fleet adequacy requires at least one tested operating point")
+    budget = min(
+        sweep_summaries,
+        key=lambda candidate: (
+            sweep_summaries[candidate]["overflow_events"],
+            sweep_summaries[candidate]["km_total"],
+            candidate,
+        ),
+    )
+    summary = sweep_summaries[budget]
+    return FleetAdequacy(
+        adequate_for_zero_overflow=summary["overflow_events"] == 0,
+        best_budget_m_per_m3=float(budget),
+        overflow_events=float(summary["overflow_events"]),
+        overflow_site_days=float(summary["overflow_site_days"]),
+    )
 
 
 def default_trucks(count: int = 4, capacity_kg: float = 5_000.0) -> list[Truck]:
@@ -642,11 +671,13 @@ def write_comparison_report(
                 f"{predictive['overflow_events'] - reds_only['overflow_events']:+.0f} overflow events."
                 if yellow_rule_active
                 else "**Yellow rule is inert at the selected default:** predictive and "
-                "predictive_reds_only are identical on distance, overflow, and sites served."
+                "predictive_reds_only are identical on distance, overflow, and sites served. "
+                "**Жёлтые баки на текущей настройке не собираются.**"
             ),
         ]
     )
     if sweep_summaries is not None:
+        adequacy = assess_fleet_adequacy(sweep_summaries)
         sweep_rows = [
             {"detour_budget_m_per_m3": budget, **summary}
             for budget, summary in sorted(sweep_summaries.items())
@@ -680,6 +711,23 @@ def write_comparison_report(
                     f"{selection.detour_budget_m_per_m3:g}`.** " + selection.reason,
                 ]
             )
+        lines.extend(
+            [
+                "",
+                "## Fleet adequacy",
+                "",
+                (
+                    "**The configured fleet reaches zero overflow at a tested operating point.** "
+                    f"Budget {adequacy.best_budget_m_per_m3:g} m/m³ records zero overflow events."
+                    if adequacy.adequate_for_zero_overflow
+                    else "**No tested operating point reaches zero overflow.** The best tested "
+                    f"configuration records {adequacy.overflow_events:.0f} overflow events "
+                    f"({adequacy.overflow_site_days:.2f} per 1000 site-days) at "
+                    f"{adequacy.best_budget_m_per_m3:g} m/m³. **Текущий парк недостаточен для "
+                    "нулевого переполнения при смоделированных ограничениях смены и маршрутизации.**"
+                ),
+            ]
+        )
     lines.append("")
     markdown_path.write_text("\n".join(lines), encoding="utf-8")
     return markdown_path, csv_path

@@ -615,6 +615,50 @@ Verify: pytest green; ruff clean; baseline violations == 0; sweep shows a curve;
 report names the chosen default and its trade-off.
 ```
 
+### S9 — V2.3: resolve the detour cliff and the commercial mislabel
+
+Two defects survive V2.2. Both distort what the simulation is actually modelling.
+
+```text
+1. AREA-TYPE MISLABEL (src/sim/world.py, ~line 315-330).
+   The current rule ends with `if commercial: return "commercial"`, so a single shop or
+   office anywhere near a site makes it commercial. Result: sector Жастар is reported as
+   45.6% commercial / 7.2% multistorey, which is implausible for a residential microdistrict
+   where ground-floor shops are normal. Because BASE_RATE["commercial"] is the highest rate
+   and commercial inverts the weekend factors, the whole simulation currently behaves like a
+   shopping district rather than a residential one.
+   Fix:
+   - Count building=yes on residential streets as residential, not unknown.
+   - Label commercial ONLY when commercial features are a clear majority of tagged buildings
+     (>=60%) AND there are >=3 commercial POIs.
+   - When ambiguous, return "mixed", never "commercial".
+   - Test with a fixture of one apartment block plus one ground-floor shop: expect
+     multistorey or mixed, never commercial.
+   - Report the resulting composition; a residential sector should be majority
+     multistorey/mixed/private.
+
+2. DETOUR-BUDGET CLIFF (reports/yellow_detour_budget_sweep.csv).
+   Budget 0 -> 3692 site visits; budget 100 -> 6022; and 100/200/400/800/1600 are all
+   identical (6022 visits, 170 overflows). The entire transition happens between 0 and 100
+   m/m3 and was never sampled, so the selector again chose 0 and `predictive` is byte-identical
+   to `predictive_reds_only` — the yellow rule has still never been demonstrated.
+   Fix:
+   - Re-sweep at {0, 5, 10, 20, 30, 50, 75, 100} m/m3 (keep 400 and 1600 as upper anchors).
+   - If a knee exists, select it per the existing rule and say in one sentence what it costs.
+   - If predictive and predictive_reds_only still coincide, the report must state that
+     explicitly — "жёлтые баки на текущей настройке не собираются" — instead of printing two
+     identical columns.
+
+3. While there: state fleet adequacy. Even predictive leaves ~28.5 overflow events per 1000
+   site-days. Report whether the configured fleet can physically prevent overflow in this
+   sector, and if not, say so — "текущий парк недостаточен для нулевого переполнения" is a
+   legitimate and valuable finding, not a failure to hide.
+
+Regenerate world + road cache (OSRM must be running) and all reports afterwards.
+Verify: pytest green; ruff clean; composition majority residential; sweep shows a curve
+between 0 and 100.
+```
+
 ---
 
 ## Extras (only when needed)

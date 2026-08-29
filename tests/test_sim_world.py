@@ -171,13 +171,32 @@ def test_area_type_uses_dominant_surrounding_evidence() -> None:
         (51.1801, 71.42, {"building": "apartments"}),
         (51.18, 71.4201, {"shop": "convenience"}),
     ]
-    commercial_context = [
+    ambiguous_commercial_context = [
         (51.18, 71.42, {"building": "apartments"}),
         (51.1801, 71.42, {"shop": "convenience"}),
         (51.18, 71.4201, {"office": "company"}),
     ]
+    commercial_context = [
+        (51.18, 71.42, {"building": "apartments"}),
+        (51.1801, 71.42, {"building": "retail", "shop": "supermarket"}),
+        (51.18, 71.4201, {"building": "commercial", "shop": "clothes"}),
+        (51.1801, 71.4201, {"building": "office", "office": "company"}),
+    ]
     assert _area_type(point, residential_context) == "multistorey"
+    assert _area_type(point, ambiguous_commercial_context) == "multistorey"
     assert _area_type(point, commercial_context) == "commercial"
+
+
+def test_ground_floor_shop_does_not_turn_apartment_block_commercial() -> None:
+    point = (51.18, 71.42)
+    context = [
+        (51.18, 71.42, {"building": "apartments"}),
+        (51.1801, 71.42, {"shop": "convenience"}),
+        (51.1802, 71.42, {"building": "yes", "addr:street": "Тараз көшесі"}),
+    ]
+    result = _area_type(point, context, {"тараз көшесі"})
+    assert result in {"multistorey", "mixed"}
+    assert result != "commercial"
 
 
 def test_committed_world_is_inside_named_residential_sector_polygon() -> None:
@@ -195,4 +214,5 @@ def test_committed_world_is_inside_named_residential_sector_polygon() -> None:
     )
     assert inside / len(world) >= 0.95
     assert set(world["sector"]) == {feature["properties"]["name"]} == {"Жастар"}
-    assert world["area_type"].isin({"mixed", "private", "multistorey"}).mean() >= 0.5
+    assert world["area_type"].isin({"mixed", "private", "multistorey"}).mean() > 0.5
+    assert world["area_type"].eq("commercial").mean() < 0.4
