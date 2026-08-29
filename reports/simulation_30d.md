@@ -4,6 +4,8 @@
 
 World: 250 sites in sector Өндіріс.
 
+> **SECTOR SCOPE WARNING.** Sector-boundary validation failed: only 1 of 250 sites falls inside the Өндіріс OSM polygon. This frozen world must not be presented as a validated residential sector sample.
+
 **Реальных площадок из OSM: 13 из 250; остальные размещены на реальных улицах.**
 
 Area-type composition: commercial: 120 (48.0%), mixed: 108 (43.2%), private: 20 (8.0%), multistorey: 2 (0.8%).

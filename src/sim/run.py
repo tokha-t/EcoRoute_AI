@@ -26,7 +26,7 @@ from src.config import (
 from src.optimize.distances import DistanceMatrix, get_matrix
 from src.optimize.solver import Plan, Route, SolverParams, Truck, plan_routes
 from src.sim.fill import ClassificationParams, advance_day, classify, empty_sites
-from src.sim.provenance import area_type_mix_text, site_provenance_text
+from src.sim.provenance import area_type_mix_text, sector_scope_warning, site_provenance_text
 from src.sim.world import generate_world
 
 Policy = Literal["fixed", "fixed_naive", "predictive", "predictive_reds_only"]
@@ -571,6 +571,7 @@ def write_comparison_report(
         }
     )
     sector = str(world["sector"].iloc[0]) if "sector" in world and not world.empty else "all"
+    scope_warning = sector_scope_warning(world, "en")
     lines = [
         "# 30-day predictive collection simulation",
         "",
@@ -579,6 +580,7 @@ def write_comparison_report(
         "",
         f"World: {len(world)} sites in sector {sector}.",
         "",
+        *([f"> **SECTOR SCOPE WARNING.** {scope_warning}", ""] if scope_warning else []),
         f"**{site_provenance_text(world, 'ru')}**",
         "",
         f"Area-type composition: {area_type_mix_text(world)}.",

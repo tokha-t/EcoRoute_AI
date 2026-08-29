@@ -64,7 +64,7 @@ from src.reports.route_sheet import build_route_sheet
 from src.routing import compare_routes
 from src.savings import calculate_savings
 from src.sim.fill import ClassificationParams
-from src.sim.provenance import area_type_mix_text, site_provenance_text
+from src.sim.provenance import area_type_mix_text, sector_scope_warning, site_provenance_text
 from src.sim.run import (
     DEFAULT_REPORT_CSV,
     DEFAULT_REPORT_MD,
@@ -926,6 +926,8 @@ def render_v2_simulation(
     st.title(t("title", lang))
     st.caption(t("subtitle", lang))
     st.markdown(f'<div class="sim-banner">{t("banner", lang)}</div>', unsafe_allow_html=True)
+    if scope_warning := sector_scope_warning(initial_world, lang):
+        st.warning(scope_warning)
 
     try:
         road_cache = load_v2_road_cache()

@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pandas as pd
+
+from src.optimize.road_cache import world_hash
+
+WORLD_METADATA_PATH = Path(__file__).resolve().parents[2] / "data" / "world.meta.json"
 
 
 def _operator_mask(world: pd.DataFrame) -> pd.Series:
@@ -40,4 +47,36 @@ def area_type_mix_text(world: pd.DataFrame) -> str:
     total = int(counts.sum())
     return ", ".join(
         f"{area_type}: {count} ({count / total * 100:.1f}%)" for area_type, count in counts.items()
+    )
+
+
+def sector_scope_warning(
+    world: pd.DataFrame,
+    lang: str = "ru",
+    *,
+    metadata_path: Path = WORLD_METADATA_PATH,
+) -> str | None:
+    """Describe a failed spatial-sector audit for the exact committed world, if present."""
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, json.JSONDecodeError):
+        return None
+    if metadata.get("world_hash") != world_hash(world):
+        return None
+    audit = metadata.get("sector_scope", {})
+    if not isinstance(audit, dict) or audit.get("validated") is not False:
+        return None
+    sector = str(audit.get("sector", "unknown"))
+    inside = int(audit.get("sites_inside_polygon", 0))
+    total = int(audit.get("site_count", len(world)))
+    if lang == "ru":
+        return (
+            f"Проверка границ сектора не пройдена: только {inside} из {total} площадок находится "
+            f"внутри OSM-полигона {sector}. Этот замороженный набор нельзя считать подтверждённой "
+            "выборкой жилого сектора."
+        )
+    return (
+        f"Sector-boundary validation failed: only {inside} of {total} sites fall inside the "
+        f"{sector} OSM polygon. This frozen world must not be presented as a validated residential "
+        "sector sample."
     )
