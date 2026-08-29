@@ -64,7 +64,12 @@ from src.reports.route_sheet import build_route_sheet
 from src.routing import compare_routes
 from src.savings import calculate_savings
 from src.sim.fill import ClassificationParams
-from src.sim.provenance import area_type_mix_text, sector_scope_warning, site_provenance_text
+from src.sim.provenance import (
+    area_type_mix_text,
+    sector_scope_text,
+    sector_scope_warning,
+    site_provenance_text,
+)
 from src.sim.run import (
     DEFAULT_REPORT_CSV,
     DEFAULT_REPORT_MD,
@@ -928,6 +933,8 @@ def render_v2_simulation(
     st.markdown(f'<div class="sim-banner">{t("banner", lang)}</div>', unsafe_allow_html=True)
     if scope_warning := sector_scope_warning(initial_world, lang):
         st.warning(scope_warning)
+    elif scope_text := sector_scope_text(initial_world, lang):
+        st.success(scope_text)
 
     try:
         road_cache = load_v2_road_cache()
@@ -1305,18 +1312,18 @@ with st.sidebar:
             """
             <div class="sidebar-note">
                 <strong>Смоделированный район</strong><br>
-                Замороженная выборка из 250 площадок внутри административной границы
-                района Байқоңыр; границы жилого сектора не подтверждены. Темпы накопления
-                синтетические; результат не является измеренной экономией.
+                250 площадок внутри подтверждённого жилого сектора и административной
+                границы района Байқоңыр. Темпы накопления синтетические;
+                результат не является измеренной экономией.
             </div>
             """
             if lang == "ru"
             else """
             <div class="sidebar-note">
                 <strong>Modeled district</strong><br>
-                Frozen 250-site sample inside the Baikonur administrative boundary;
-                residential-sector boundaries are not validated. All accumulation rates
-                are synthetic; this is not measured savings.
+                250 sites inside a validated residential-sector boundary and the Baikonur
+                administrative boundary. All accumulation rates are synthetic;
+                this is not measured savings.
             </div>
             """
         )

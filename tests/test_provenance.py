@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.optimize.road_cache import world_hash
-from src.sim.provenance import sector_scope_warning
+from src.sim.provenance import sector_scope_text, sector_scope_warning
 
 
 def _world() -> pd.DataFrame:
@@ -47,9 +47,18 @@ def test_sector_scope_warning_ignores_validated_world(tmp_path: Path) -> None:
         json.dumps(
             {
                 "world_hash": world_hash(world),
-                "sector_scope": {"validated": True},
+                "sector_scope": {
+                    "validated": True,
+                    "sector": "Жастар",
+                    "sites_inside_polygon": 250,
+                    "site_count": 250,
+                    "containment_pct": 100.0,
+                },
             }
         ),
         encoding="utf-8",
     )
     assert sector_scope_warning(world, metadata_path=metadata) is None
+    assert sector_scope_text(world, "ru", metadata_path=metadata) == (
+        "Границы сектора подтверждены: 250 из 250 площадок (100.0%) внутри полигона Жастар."
+    )

@@ -601,8 +601,16 @@ Read docs/SPEC_V2_SIMULATION.md §8ter (added 2026-08-29). One session, four fix
 
 Then regenerate reports/simulation_30d.* and the sweep artifacts.
 
+AUTHORIZED (supersedes any earlier "do not change the road cache" wording): regenerating
+data/world.csv and data/road_cache/ is REQUIRED whenever site coordinates change. The world
+and the road cache are a matched pair — meta.json.world_hash must always match the world.
+Precondition: OSRM must be running locally (see docs/osrm-setup.md) before
+scripts/build_road_cache.py; if it is unreachable, stop and report — never ship a cache
+built from haversine fallbacks.
+
 Do NOT weaken the max-interval RED promotion, do NOT tune a constant by hand to make a
-number look better, do NOT change the road cache.
+number look better, do NOT change the road-cache lookup ARCHITECTURE (cache -> OSRM ->
+labelled straight line). Regenerating the cache DATA is expected.
 Verify: pytest green; ruff clean; baseline violations == 0; sweep shows a curve;
 report names the chosen default and its trade-off.
 ```

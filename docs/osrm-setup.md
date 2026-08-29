@@ -39,7 +39,8 @@ docker run --rm -t -i -p 5000:5000 -v "$(pwd):/data" ghcr.io/project-osrm/osrm-b
 ```
 
 `--max-table-size 500` matters: OSRM's default cap is 100 locations per
-`/table` request, and the demo asks for a ~181×181 matrix (180 bins + depot).
+`/table` request, and the current demo asks for a 252×252 matrix (250 sites,
+depot, and landfill).
 
 **macOS gotcha:** AirPlay Receiver occupies port 5000 (it answers with
 `403 Forbidden`, which the app safely treats as "OSRM down"). Before starting

@@ -497,7 +497,24 @@ The map legend, the report header, and any exported route sheet carry:
 
 If a real registry is later imported (M7c), this line switches to `"данные оператора"` automatically.
 
-### 8ter.5 Acceptance criteria for V2.2
+### 8ter.5 World and road cache are a matched pair (clarification)
+
+`data/world.csv` and `data/road_cache/` must always be regenerated **together**. Any change to site
+coordinates — sector selection, site count, bbox, boundary — invalidates the cache, and
+`meta.json.world_hash` exists precisely to detect that. Rebuilding the cache artifact is a normal,
+expected step, not a prohibited one; what must not change casually is the *lookup architecture*
+(cache → live OSRM → labelled straight line).
+
+Preconditions for a rebuild: OSRM running locally per `docs/osrm-setup.md`. If OSRM is unreachable
+the build must fail — a cache silently populated from haversine fallbacks would make the app look
+road-accurate while being anything but, which is the exact failure V2.1 was created to end.
+
+Also fix, found during the V2.2 audit: the sector was being **labelled** on the report rather than
+**applied** to generation — the current world claims "250 sites in sector Өндіріс" while only 1 site
+falls inside that polygon. Sector selection must filter generation, and a test must assert that
+≥95% of generated sites lie inside the named sector polygon.
+
+### 8ter.6 Acceptance criteria for V2.2
 
 - [ ] Fixed baseline yields exactly 0 max-interval violations; a test asserts it.
 - [ ] Sweep includes the 0–0.25 range; the report shows a curve, and the chosen default is justified

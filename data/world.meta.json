@@ -1,14 +1,11 @@
 {
-  "world_hash": "d492c18484e113bbdd1f3b4d20296cd5919fb09ba9ce343e9678e4a3567e8c0d",
+  "world_hash": "da15846f059142e6812d4f5f05c59232aa1728016917b899463348a87ca85f0a",
   "sector_scope": {
-    "validated": false,
-    "sector": "Өндіріс",
-    "osm_type": "way",
-    "osm_id": 1276713306,
-    "osm_url": "https://www.openstreetmap.org/way/1276713306",
-    "sites_inside_polygon": 1,
+    "validated": true,
+    "sector": "Жастар",
+    "sites_inside_polygon": 250,
     "site_count": 250,
-    "audited_at": "2026-08-29",
-    "method": "OSM polygon containment"
+    "containment_pct": 100.0,
+    "method": "convex hull of residential landuse polygons assigned to a named OSM place"
   }
 }

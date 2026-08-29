@@ -12,6 +12,20 @@ from src.optimize.road_cache import world_hash
 WORLD_METADATA_PATH = Path(__file__).resolve().parents[2] / "data" / "world.meta.json"
 
 
+def _matching_sector_scope(
+    world: pd.DataFrame,
+    metadata_path: Path,
+) -> dict | None:
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, json.JSONDecodeError):
+        return None
+    if metadata.get("world_hash") != world_hash(world):
+        return None
+    audit = metadata.get("sector_scope")
+    return audit if isinstance(audit, dict) else None
+
+
 def _operator_mask(world: pd.DataFrame) -> pd.Series:
     """Recognize an eventual operator registry without coupling to one importer."""
     for column in ("source_operator", "operator_data"):
@@ -57,14 +71,8 @@ def sector_scope_warning(
     metadata_path: Path = WORLD_METADATA_PATH,
 ) -> str | None:
     """Describe a failed spatial-sector audit for the exact committed world, if present."""
-    try:
-        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    except (OSError, TypeError, json.JSONDecodeError):
-        return None
-    if metadata.get("world_hash") != world_hash(world):
-        return None
-    audit = metadata.get("sector_scope", {})
-    if not isinstance(audit, dict) or audit.get("validated") is not False:
+    audit = _matching_sector_scope(world, metadata_path)
+    if audit is None or audit.get("validated") is not False:
         return None
     sector = str(audit.get("sector", "unknown"))
     inside = int(audit.get("sites_inside_polygon", 0))
@@ -79,4 +87,29 @@ def sector_scope_warning(
         f"Sector-boundary validation failed: only {inside} of {total} sites fall inside the "
         f"{sector} OSM polygon. This frozen world must not be presented as a validated residential "
         "sector sample."
+    )
+
+
+def sector_scope_text(
+    world: pd.DataFrame,
+    lang: str = "ru",
+    *,
+    metadata_path: Path = WORLD_METADATA_PATH,
+) -> str | None:
+    """Return the successful polygon-containment audit for the exact committed world."""
+    audit = _matching_sector_scope(world, metadata_path)
+    if audit is None or audit.get("validated") is not True:
+        return None
+    sector = str(audit.get("sector", "unknown"))
+    inside = int(audit.get("sites_inside_polygon", 0))
+    total = int(audit.get("site_count", len(world)))
+    percentage = float(audit.get("containment_pct", inside / total * 100 if total else 0.0))
+    if lang == "ru":
+        return (
+            f"Границы сектора подтверждены: {inside} из {total} площадок "
+            f"({percentage:.1f}%) внутри полигона {sector}."
+        )
+    return (
+        f"Sector boundary validated: {inside} of {total} sites ({percentage:.1f}%) "
+        f"are inside the {sector} polygon."
     )
