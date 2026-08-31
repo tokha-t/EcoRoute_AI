@@ -72,11 +72,30 @@ def trajectory_params_hash(params: TrajectoryParams) -> str:
     return _hash_text(json.dumps(asdict(params), sort_keys=True, separators=(",", ":")))
 
 
-def trajectory_key(world: pd.DataFrame, params: TrajectoryParams, days: int, seed: int) -> str:
+def distance_matrix_hash(matrix: DistanceMatrix) -> str:
+    """Hash the routing inputs so profile/cache changes invalidate day snapshots."""
+    digest = hashlib.sha256()
+    digest.update(str(matrix.source).encode("utf-8"))
+    digest.update(b"\x01" if matrix.fallback_used else b"\x00")
+    for values in (matrix.meters, matrix.seconds):
+        array = np.asarray(values, dtype=np.float64)
+        digest.update(str(array.shape).encode("ascii"))
+        digest.update(array.tobytes(order="C"))
+    return digest.hexdigest()
+
+
+def trajectory_key(
+    world: pd.DataFrame,
+    params: TrajectoryParams,
+    days: int,
+    seed: int,
+    matrix: DistanceMatrix | None = None,
+) -> str:
     payload = {
-        "version": 1,
+        "version": 2,
         "world_hash": trajectory_world_hash(world),
         "params_hash": trajectory_params_hash(params),
+        "matrix_hash": distance_matrix_hash(matrix) if matrix is not None else "unspecified",
         "days": int(days),
         "seed": int(seed),
     }
@@ -89,8 +108,9 @@ def trajectory_cache_path(
     days: int,
     seed: int,
     cache_dir: Path = TRAJECTORY_CACHE_DIR,
+    matrix: DistanceMatrix | None = None,
 ) -> Path:
-    return cache_dir / f"trajectory_{trajectory_key(world, params, days, seed)[:20]}.pkl"
+    return cache_dir / f"trajectory_{trajectory_key(world, params, days, seed, matrix)[:20]}.pkl"
 
 
 def _world_points(world: pd.DataFrame, params: TrajectoryParams) -> list[Point]:
@@ -202,13 +222,13 @@ def build_trajectory(
     """Build or load all day snapshots exactly once for a parameter signature."""
     if days < 0:
         raise ValueError("days cannot be negative")
-    key = trajectory_key(world, params, days, seed)
-    path = trajectory_cache_path(world, params, days, seed, cache_dir)
+    state = world.copy().reset_index(drop=True)
+    full_matrix = matrix or get_matrix(_world_points(state, params), timeout=0.5)
+    key = trajectory_key(world, params, days, seed, full_matrix)
+    path = trajectory_cache_path(world, params, days, seed, cache_dir, full_matrix)
     cached = _load_disk_cache(path, key)
     if cached is not None:
         return cached
-    state = world.copy().reset_index(drop=True)
-    full_matrix = matrix or get_matrix(_world_points(state, params), timeout=0.5)
     rng = np.random.default_rng(seed)
     snapshots: list[DaySnapshot] = []
     previous_plan: Plan | None = None

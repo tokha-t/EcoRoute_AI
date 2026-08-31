@@ -39,9 +39,19 @@ from src.data_generator import (
     ensure_data_exists,
 )
 from src.i18n import t
-from src.map_utils import create_fleet_route_map, create_route_map, create_simulation_map
+from src.map_utils import (
+    create_fleet_route_map,
+    create_route_map,
+    create_simulation_map,
+    simulation_stop_details,
+)
 from src.optimize.distances import apply_road_distances
-from src.optimize.road_cache import RoadCacheError, load_road_cache
+from src.optimize.road_cache import (
+    RoadCacheError,
+    courtyard_access_text,
+    load_road_cache,
+    routing_profile,
+)
 from src.optimize.solver import (
     DEFAULT_TRUCK_CAPACITY_KG,
     MAX_TRUCKS,
@@ -200,6 +210,39 @@ def stretch_plotly_chart(fig, config: dict | None = None) -> None:
         st.plotly_chart(fig, width="stretch", config=chart_config)
     except TypeError:
         st.plotly_chart(fig, use_container_width=True, config=chart_config)
+
+
+def selectable_plotly_chart(fig, *, key: str):
+    """Render a point-selectable Plotly chart, with compatibility for older Streamlit."""
+    try:
+        return st.plotly_chart(
+            fig,
+            width="stretch",
+            config=PLOTLY_CONFIG,
+            key=key,
+            on_select="rerun",
+            selection_mode="points",
+        )
+    except TypeError:
+        st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG, key=key)
+        return None
+
+
+def selected_site_from_chart_event(event) -> str | None:
+    """Extract a site id from Streamlit's Plotly selection state."""
+    selection = getattr(event, "selection", None)
+    if selection is None and isinstance(event, dict):
+        selection = event.get("selection")
+    points = getattr(selection, "points", None)
+    if points is None and isinstance(selection, dict):
+        points = selection.get("points")
+    if not points:
+        return None
+    point = points[-1]
+    customdata = point.get("customdata") if isinstance(point, dict) else getattr(point, "customdata", None)
+    if isinstance(customdata, (list, tuple)):
+        customdata = customdata[0] if customdata else None
+    return str(customdata) if customdata not in (None, "") else None
 
 
 def stretch_dataframe(df: pd.DataFrame, **kwargs) -> None:
@@ -1033,6 +1076,12 @@ def render_v2_simulation(
         ),
     )
     selected_truck = None if truck_choice == "ALL" else truck_choice
+    route_sheet_all = build_route_sheet(
+        plan,
+        classified,
+        lang,
+        simulation_day=int(requested_day),
+    )
     map_figure, geometry_source, straight_segments = create_simulation_map(
         classified,
         plan,
@@ -1041,6 +1090,7 @@ def render_v2_simulation(
         lang,
         selected_truck_id=selected_truck,
         depot_assumed=DEPOT_COORDS_ASSUMED,
+        route_sheet_rows=route_sheet_all.rows,
     )
     if straight_segments:
         st.warning(
@@ -1067,14 +1117,70 @@ def render_v2_simulation(
         + f" · {t('sector', lang)}: {classified['sector'].iloc[0]}"
         + f" · {t('area_mix', lang)}: {area_type_mix_text(classified)}"
         + f" · {route_label}"
+        + (
+            f" · Профиль дорожного кэша: {routing_profile(road_cache.meta)}"
+            f" · {courtyard_access_text(road_cache.meta, lang)}"
+            if lang == "ru"
+            else f" · Road-cache profile: {routing_profile(road_cache.meta)}"
+            f" · {courtyard_access_text(road_cache.meta, lang)}"
+        )
     )
-    stretch_plotly_chart(map_figure)
+    map_column, detail_column = st.columns([3.3, 1.0])
+    with map_column:
+        map_event = selectable_plotly_chart(
+            map_figure,
+            key=f"v2_ops_map_{requested_day}_{selected_truck or 'all'}",
+        )
+    selection_key = f"v2_selected_map_site_{requested_day}"
+    clicked_site = selected_site_from_chart_event(map_event)
+    if clicked_site is not None:
+        st.session_state[selection_key] = clicked_site
+    default_site = next(
+        (
+            site_id
+            for route in plan.routes
+            if selected_truck is None or route.truck_id == selected_truck
+            for site_id in route.ordered_stops
+            if site_id != "LANDFILL"
+        ),
+        None,
+    )
+    detail_site = st.session_state.get(selection_key, default_site)
+    details = (
+        simulation_stop_details(classified, route_sheet_all.rows, detail_site)
+        if detail_site is not None
+        else None
+    )
+    with detail_column:
+        st.subheader("Остановка" if lang == "ru" else "Stop details")
+        st.caption(
+            "Нажмите площадку на карте для подробностей."
+            if lang == "ru"
+            else "Click a site on the map for details."
+        )
+        if details is None:
+            st.info("Нет выбранной площадки." if lang == "ru" else "No site selected.")
+        else:
+            st.markdown(f"**{details['site_id']}**  \n{details['address']}")
+            detail_metrics = st.columns(2)
+            detail_metrics[0].metric(
+                "Заполнение" if lang == "ru" else "Fill", f"{details['fill_pct']:.1f}%"
+            )
+            detail_metrics[1].metric("Класс" if lang == "ru" else "Class", details["klass"])
+            st.markdown(
+                f"**{'Машина' if lang == 'ru' else 'Truck'}:** {details['truck_id'] or '—'}  \n"
+                f"**{'Порядок' if lang == 'ru' else 'Order'}:** "
+                f"{details['sequence'] if details['sequence'] is not None else '—'}  \n"
+                f"**ETA:** {details['eta'] or '—'}  \n"
+                f"**{'Загрузка' if lang == 'ru' else 'Load'}:** "
+                + (f"{details['load_kg']:.0f} kg" if details["load_kg"] is not None else "—")
+                + f"  \n**{'Статус' if lang == 'ru' else 'Status'}:** {details['status'] or '—'}  \n"
+                + f"**{'Причина' if lang == 'ru' else 'Reason'}:** {details['reason'] or '—'}"
+            )
 
     if plan.routes:
         st.subheader("Машины" if lang == "ru" else "Trucks")
-    visible_routes = [
-        route for route in plan.routes if selected_truck is None or route.truck_id == selected_truck
-    ]
+    visible_routes = list(plan.routes)
     for route in visible_routes:
         with st.container(border=True):
             st.markdown(f"**{t('truck', lang)} {route.truck_id}**")
@@ -1090,12 +1196,16 @@ def render_v2_simulation(
             )
 
     if plan.routes:
-        route_sheet = build_route_sheet(
-            plan,
-            classified,
-            "ru",
-            truck_id=selected_truck,
-            simulation_day=int(requested_day),
+        route_sheet = (
+            route_sheet_all
+            if selected_truck is None
+            else build_route_sheet(
+                plan,
+                classified,
+                lang,
+                truck_id=selected_truck,
+                simulation_day=int(requested_day),
+            )
         )
         st.subheader("Порядок остановок" if lang == "ru" else "Ordered stops")
         stretch_dataframe(

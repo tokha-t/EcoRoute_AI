@@ -49,7 +49,20 @@ def test_short_comparison_and_report_safety_kpis(tmp_path: Path, monkeypatch) ->
 
     markdown = tmp_path / "simulation.md"
     csv = tmp_path / "simulation.csv"
-    write_comparison_report(world, results, markdown, csv)
+    write_comparison_report(
+        world,
+        results,
+        markdown,
+        csv,
+        road_cache_meta={
+            "osrm_profile": "refuse_truck",
+            "courtyard_access": {
+                "threshold_m": 40.0,
+                "sites_without_mapped_access": 3,
+                "share_pct": 10.0,
+            },
+        },
+    )
     text = markdown.read_text(encoding="utf-8")
     assert "km_total" in text
     assert "overflow_events" in text
@@ -59,6 +72,8 @@ def test_short_comparison_and_report_safety_kpis(tmp_path: Path, monkeypatch) ->
     assert "Реальных площадок из OSM:" in text
     assert "Area-type composition:" in text
     assert "Жёлтые баки на текущей настройке не собираются" in text
+    assert "Routing profile: **refuse_truck**" in text
+    assert "площадок без картированного подъезда: 3 (10.0%)" in text
     assert csv.exists()
 
 

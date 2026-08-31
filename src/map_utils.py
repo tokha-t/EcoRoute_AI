@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from math import atan2, cos, degrees, pi, radians, sin
+
 import pandas as pd
 import plotly.graph_objects as go
 
@@ -19,6 +21,8 @@ PRIORITY_COLORS = {
 
 TRUCK_ROUTE_COLORS = ["#0f172a", "#7c3aed", "#0d9488"]
 MAX_LABELED_STOPS = 24
+RETURN_LEG_COLOR = "#2563eb"
+LANDFILL_LEG_COLOR = "#7c2d12"
 
 
 def priority_color(priority: str) -> str:
@@ -214,6 +218,7 @@ def create_simulation_map(
     *,
     selected_truck_id: str | None = None,
     depot_assumed: bool = True,
+    route_sheet_rows: pd.DataFrame | None = None,
 ) -> tuple[go.Figure, str, int]:
     """V2 class map with road-following truck overlays and an offline fallback."""
     fig = go.Figure()
@@ -235,18 +240,7 @@ def create_simulation_map(
             "none": "нет" if lang == "ru" else "none",
         }
         hover = [
-            "<br>".join(
-                [
-                    f"<b>{row.address}</b>",
-                    f"{labels[0]}: {min(float(row.fill_pct), 100):.1f}%"
-                    + (f" · {labels[1]}" if float(row.fill_pct) > 100 else ""),
-                    f"{labels[2]}: {float(row.daily_fill_rate_pct):.1f}%/"
-                    + ("день" if lang == "ru" else "day"),
-                    f"{labels[3]}: {int(row.days_since_service)}",
-                    f"{labels[4]}: {row.klass}",
-                    f"{labels[5]}: {reason_labels.get(row.reason, row.reason)}",
-                ]
-            )
+            _simulation_hover_text(row, route_sheet_rows, labels, reason_labels, lang)
             for row in sites.itertuples()
         ]
         fig.add_trace(
@@ -256,6 +250,7 @@ def create_simulation_map(
                 mode="markers",
                 marker={"size": sizes, "color": class_colors[klass], "opacity": 0.82},
                 text=hover,
+                customdata=sites["site_id"].astype(str),
                 hoverinfo="text",
                 name=klass,
             )
@@ -263,10 +258,12 @@ def create_simulation_map(
 
     by_id = world_df.set_index("site_id")
     geometry_sources: list[str] = []
-    routes = [
-        route for route in plan.routes if selected_truck_id is None or route.truck_id == selected_truck_id
-    ]
-    for index, route in enumerate(routes):
+    stop_number_layers: list[dict[str, object]] = []
+    selected_route = None
+    for index, route in enumerate(plan.routes):
+        if route.truck_id == selected_truck_id:
+            selected_route = route
+        emphasized = selected_truck_id is None or route.truck_id == selected_truck_id
         ordered_points: list[Point] = [depot]
         for stop in route.ordered_stops:
             if stop == "LANDFILL":
@@ -277,10 +274,11 @@ def create_simulation_map(
         ordered_points.append(depot)
         geometry = get_route_geometry(ordered_points)
         color = TRUCK_ROUTE_COLORS[index % len(TRUCK_ROUTE_COLORS)]
+        ordered_stop_ids = ["DEPOT", *route.ordered_stops, "DEPOT"]
         for segment_index, segment in enumerate(geometry.segments):
             geometry_sources.append(segment.source)
             is_final = segment_index == len(geometry.segments) - 1
-            is_to_landfill = segment_index == len(geometry.segments) - 2
+            is_to_landfill = ordered_stop_ids[segment_index + 1] == "LANDFILL"
             if is_final:
                 label = (
                     f"{route.truck_id} · полигон → парк · {segment.distance_m / 1000:.1f} км"
@@ -295,6 +293,9 @@ def create_simulation_map(
                 )
             else:
                 label = route.truck_id
+            segment_color = (
+                RETURN_LEG_COLOR if is_final else LANDFILL_LEG_COLOR if is_to_landfill else color
+            )
             if segment.source == "straight":
                 latitudes: list[float | None] = []
                 longitudes: list[float | None] = []
@@ -313,12 +314,79 @@ def create_simulation_map(
                     lat=latitudes,
                     lon=longitudes,
                     mode="lines",
-                    line={"width": 5, "color": color},
+                    line={"width": 6 if emphasized else 3, "color": segment_color},
                     name=label,
+                    opacity=1.0 if emphasized else 0.18,
                     hoverinfo="name",
-                    showlegend=is_final or is_to_landfill or segment_index == 0,
+                    showlegend=emphasized and (is_final or is_to_landfill or segment_index == 0),
                 )
             )
+            arrow = _segment_direction(segment.points)
+            if arrow is not None:
+                arrow_lat, arrow_lon, arrow_angle = arrow
+                arrow_points = _direction_chevron(arrow_lat, arrow_lon, arrow_angle)
+                fig.add_trace(
+                    go.Scattermap(
+                        lat=[point[0] for point in arrow_points],
+                        lon=[point[1] for point in arrow_points],
+                        mode="lines",
+                        line={"width": 5 if emphasized else 3, "color": segment_color},
+                        name=f"{route.truck_id} direction",
+                        opacity=0.92 if emphasized else 0.15,
+                        hoverinfo="skip",
+                        showlegend=False,
+                    )
+                )
+
+    if selected_route is not None:
+        selected_color = TRUCK_ROUTE_COLORS[plan.routes.index(selected_route) % len(TRUCK_ROUTE_COLORS)]
+        stop_ids = [stop for stop in selected_route.ordered_stops if stop != "LANDFILL" and stop in by_id.index]
+        selected_sites = by_id.loc[stop_ids] if stop_ids else by_id.iloc[0:0]
+        fig.add_trace(
+            go.Scattermap(
+                lat=selected_sites["lat"],
+                lon=selected_sites["lon"],
+                mode="markers",
+                marker={"size": 23, "color": "#ffffff", "opacity": 0.96},
+                customdata=stop_ids,
+                hovertext=[
+                    _simulation_hover_text(
+                        by_id.loc[site_id],
+                        route_sheet_rows,
+                        (
+                            ("Заполнение", "ПЕРЕПОЛНЕНИЕ", "Темп", "Дней после вывоза", "Класс", "Причина")
+                            if lang == "ru"
+                            else ("Fill", "OVERFLOW", "Rate", "Days since service", "Class", "Reason")
+                        ),
+                        {},
+                        lang,
+                    )
+                    for site_id in stop_ids
+                ],
+                hoverinfo="text",
+                name=f"{selected_route.truck_id} stop order",
+                showlegend=True,
+            )
+        )
+        stop_number_layers.extend(
+            {
+                "sourcetype": "geojson",
+                "source": {
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Point",
+                        "coordinates": [float(row.lon), float(row.lat)],
+                    },
+                },
+                "type": "symbol",
+                "symbol": {
+                    "text": str(number),
+                    "textposition": "middle center",
+                    "textfont": {"size": 11, "color": selected_color},
+                },
+            }
+            for number, row in enumerate(selected_sites.itertuples(), start=1)
+        )
 
     infrastructure = (
         (
@@ -342,7 +410,7 @@ def create_simulation_map(
                 lat=[point[0]],
                 lon=[point[1]],
                 mode="markers",
-                marker={"size": 19, "color": color},
+                marker={"size": 21, "color": color},
                 hovertext=[label],
                 hoverinfo="text",
                 name=label,
@@ -353,6 +421,7 @@ def create_simulation_map(
             "style": "carto-positron",
             "center": {"lat": float(world_df["lat"].mean()), "lon": float(world_df["lon"].mean())},
             "zoom": 11.2,
+            "layers": stop_number_layers,
         },
         height=720,
         margin={"r": 0, "t": 0, "l": 0, "b": 0},
@@ -361,3 +430,101 @@ def create_simulation_map(
     source_set = set(geometry_sources)
     source = next(iter(source_set)) if len(source_set) == 1 else "mixed" if source_set else "straight"
     return fig, source, geometry_sources.count("straight")
+
+
+def _segment_direction(points: list[Point]) -> tuple[float, float, float] | None:
+    """Return a midpoint and clockwise bearing for a route-direction marker."""
+    if len(points) < 2:
+        return None
+    end_index = max(1, len(points) // 2)
+    start = points[end_index - 1]
+    end = points[end_index]
+    lat1, lat2 = radians(start[0]), radians(end[0])
+    delta_lon = radians(end[1] - start[1])
+    x = sin(delta_lon) * cos(lat2)
+    y = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(delta_lon)
+    bearing = (degrees(atan2(x, y)) + 360) % 360
+    return end[0], end[1], bearing
+
+
+def _direction_chevron(latitude: float, longitude: float, bearing: float) -> list[Point]:
+    """Create a small, map-native chevron pointing along a route segment."""
+    heading = radians(bearing)
+    wing_length = 0.00028
+    wing_angle = 0.62
+    longitude_scale = max(cos(radians(latitude)), 0.2)
+
+    def wing(offset: float) -> Point:
+        direction = heading + pi + offset
+        return (
+            latitude + wing_length * cos(direction),
+            longitude + wing_length * sin(direction) / longitude_scale,
+        )
+
+    return [wing(-wing_angle), (latitude, longitude), wing(wing_angle)]
+
+
+def simulation_stop_details(
+    world_df: pd.DataFrame,
+    route_sheet_rows: pd.DataFrame,
+    site_id: str,
+) -> dict[str, object] | None:
+    """Build the operator-facing detail card for a selected map site."""
+    matches = world_df[world_df["site_id"].astype(str).eq(str(site_id))]
+    if matches.empty:
+        return None
+    site = matches.iloc[0]
+    sheet_matches = route_sheet_rows[
+        route_sheet_rows.get("site_id", pd.Series(dtype=str)).astype(str).eq(str(site_id))
+    ]
+    sheet = sheet_matches.iloc[0] if not sheet_matches.empty else None
+    return {
+        "site_id": str(site_id),
+        "address": str(site.get("address", "")),
+        "klass": str(site.get("klass", "")),
+        "fill_pct": float(site.get("fill_pct", 0.0)),
+        "truck_id": "" if sheet is None else str(sheet.get("truck_id", "")),
+        "sequence": None if sheet is None or pd.isna(sheet.get("sequence")) else int(sheet["sequence"]),
+        "eta": "" if sheet is None else str(sheet.get("eta", "")),
+        "load_kg": (
+            None
+            if sheet is None or pd.isna(sheet.get("cumulative_load_kg"))
+            else float(sheet["cumulative_load_kg"])
+        ),
+        "status": "" if sheet is None else str(sheet.get("status", "")),
+        "reason": (
+            str(sheet.get("reason", ""))
+            if sheet is not None and str(sheet.get("reason", ""))
+            else str(site.get("reason", ""))
+        ),
+    }
+
+
+def _simulation_hover_text(row, route_sheet_rows, labels, reason_labels, lang: str) -> str:
+    row_data = row._asdict() if hasattr(row, "_asdict") else row.to_dict()
+    if "site_id" not in row_data and getattr(row, "name", None) is not None:
+        row_data["site_id"] = str(row.name)
+    site_id = str(row_data.get("site_id", ""))
+    details = (
+        simulation_stop_details(pd.DataFrame([row_data]), route_sheet_rows, site_id)
+        if route_sheet_rows is not None
+        else None
+    )
+    reason = str(row_data.get("reason", ""))
+    lines = [
+        f"<b>{row_data.get('address', '')}</b>",
+        f"{labels[0]}: {min(float(row_data.get('fill_pct', 0.0)), 100):.1f}%"
+        + (f" · {labels[1]}" if float(row_data.get("fill_pct", 0.0)) > 100 else ""),
+        f"{labels[2]}: {float(row_data.get('daily_fill_rate_pct', 0.0)):.1f}%/"
+        + ("день" if lang == "ru" else "day"),
+        f"{labels[3]}: {int(row_data.get('days_since_service', 0))}",
+        f"{labels[4]}: {row_data.get('klass', '')}",
+        f"{labels[5]}: {reason_labels.get(reason, reason)}",
+    ]
+    if details is not None and details["truck_id"]:
+        lines.append(f"{details['truck_id']} · № {details['sequence']} · ETA {details['eta']}")
+    if details is not None and details["load_kg"] is not None:
+        lines.append(
+            ("Загрузка" if lang == "ru" else "Load") + f": {float(details['load_kg']):.0f} kg"
+        )
+    return "<br>".join(lines)

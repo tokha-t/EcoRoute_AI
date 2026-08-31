@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
+import re
 import shutil
 import sys
 import tempfile
@@ -31,15 +32,21 @@ from src.sim.trajectory import TrajectoryParams, build_trajectory  # noqa: E402
 
 MAX_ARTIFACT_BYTES = 25 * 1024 * 1024
 REQUEST_TIMEOUT_SECONDS = 30.0
+COURTYARD_ACCESS_THRESHOLD_M = 40.0
+PROFILE_PATTERN = re.compile(r"^[a-z0-9_-]+$")
 
 
 def _coordinates(nodes: pd.DataFrame) -> str:
     return ";".join(f"{row.lon:.6f},{row.lat:.6f}" for row in nodes.itertuples())
 
 
-def _fetch_matrix(nodes: pd.DataFrame, base_url: str) -> tuple[np.ndarray, np.ndarray]:
+def _fetch_matrix(
+    nodes: pd.DataFrame,
+    base_url: str,
+    profile: str,
+) -> tuple[np.ndarray, np.ndarray]:
     response = requests.get(
-        f"{base_url.rstrip('/')}/table/v1/driving/{_coordinates(nodes)}",
+        f"{base_url.rstrip('/')}/table/v1/{profile}/{_coordinates(nodes)}",
         params={"annotations": "duration,distance"},
         timeout=REQUEST_TIMEOUT_SECONDS,
     )
@@ -112,12 +119,17 @@ def _reference_route_edges(
     return route_edges
 
 
-def _fetch_geometry(edge: tuple[int, int], nodes: pd.DataFrame, base_url: str) -> dict[str, int | str]:
+def _fetch_geometry(
+    edge: tuple[int, int],
+    nodes: pd.DataFrame,
+    base_url: str,
+    profile: str,
+) -> dict[str, int | str]:
     start, end = edge
     a, b = nodes.iloc[start], nodes.iloc[end]
     coordinates = f"{a.lon:.6f},{a.lat:.6f};{b.lon:.6f},{b.lat:.6f}"
     response = requests.get(
-        f"{base_url.rstrip('/')}/route/v1/driving/{coordinates}",
+        f"{base_url.rstrip('/')}/route/v1/{profile}/{coordinates}",
         params={"overview": "full", "geometries": "geojson", "steps": "false"},
         timeout=REQUEST_TIMEOUT_SECONDS,
     )
@@ -130,15 +142,71 @@ def _fetch_geometry(edge: tuple[int, int], nodes: pd.DataFrame, base_url: str) -
     return {"a": start, "b": end, "poly": encode_polyline(points)}
 
 
+def _fetch_access_distance(row: object, base_url: str, profile: str) -> float:
+    response = requests.get(
+        f"{base_url.rstrip('/')}/nearest/v1/{profile}/{float(row.lon):.6f},{float(row.lat):.6f}",
+        params={"number": 1},
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    waypoints = payload.get("waypoints") or []
+    if payload.get("code") != "Ok" or not waypoints:
+        raise RuntimeError(f"OSRM nearest failed for {row.node_id}")
+    distance = waypoints[0].get("distance")
+    if distance is None or float(distance) < 0:
+        raise RuntimeError(f"OSRM nearest omitted snap distance for {row.node_id}")
+    return float(distance)
+
+
+def _courtyard_access(
+    nodes: pd.DataFrame,
+    base_url: str,
+    profile: str,
+    workers: int,
+) -> dict[str, float | int]:
+    sites = list(nodes[nodes["kind"].eq("site")].itertuples(index=False))
+    distances: list[float] = []
+    failures: list[str] = []
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        pending = {
+            executor.submit(_fetch_access_distance, row, base_url, profile): str(row.node_id)
+            for row in sites
+        }
+        for future in as_completed(pending):
+            site_id = pending[future]
+            try:
+                distances.append(future.result())
+            except (requests.RequestException, RuntimeError, ValueError, KeyError) as exc:
+                failures.append(f"{site_id}: {exc}")
+    if failures:
+        raise RuntimeError(
+            f"OSRM nearest failed for {len(failures)} site(s); courtyard coverage was not computed"
+        )
+    without_access = sum(distance > COURTYARD_ACCESS_THRESHOLD_M for distance in distances)
+    count = len(distances)
+    return {
+        "threshold_m": COURTYARD_ACCESS_THRESHOLD_M,
+        "site_count": count,
+        "sites_without_mapped_access": without_access,
+        "share_pct": round(without_access / count * 100, 1) if count else 0.0,
+        "mean_snap_distance_m": round(float(np.mean(distances)), 1) if distances else 0.0,
+        "max_snap_distance_m": round(max(distances), 1) if distances else 0.0,
+    }
+
+
 def build_cache(
     world_path: Path,
     output_dir: Path,
     base_url: str,
     k: int,
     workers: int,
+    profile: str = "driving",
 ) -> dict:
     if k < 1:
         raise ValueError("k must be positive")
+    if not PROFILE_PATTERN.fullmatch(profile):
+        raise ValueError("profile must contain only lowercase letters, digits, underscores, or hyphens")
     world = pd.read_csv(world_path)
     sites = world[["site_id", "lat", "lon"]].rename(columns={"site_id": "node_id"})
     sites.insert(1, "kind", "site")
@@ -163,17 +231,26 @@ def build_cache(
     )
     try:
         requests.get(
-            f"{base_url.rstrip('/')}/nearest/v1/driving/{nodes.iloc[0].lon},{nodes.iloc[0].lat}", timeout=3
+            f"{base_url.rstrip('/')}/nearest/v1/{profile}/{nodes.iloc[0].lon},{nodes.iloc[0].lat}",
+            timeout=3,
         ).raise_for_status()
     except requests.RequestException as exc:
         raise RuntimeError(f"OSRM is unreachable at {base_url}; road cache was not built") from exc
-    meters, seconds = _fetch_matrix(nodes, base_url)
+    meters, seconds = _fetch_matrix(nodes, base_url, profile)
+    courtyard_access = _courtyard_access(nodes, base_url, profile, workers)
+    print(
+        "courtyard access: "
+        f"{courtyard_access['sites_without_mapped_access']}/{courtyard_access['site_count']} "
+        f"sites exceed {courtyard_access['threshold_m']:.0f} m"
+    )
     route_edges = _reference_route_edges(world, nodes, meters, seconds)
     edges = sorted(set(_geometry_edges(meters, k)) | route_edges)
     records: list[dict[str, int | str]] = []
     failures: list[str] = []
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        pending = {executor.submit(_fetch_geometry, edge, nodes, base_url): edge for edge in edges}
+        pending = {
+            executor.submit(_fetch_geometry, edge, nodes, base_url, profile): edge for edge in edges
+        }
         for number, future in enumerate(as_completed(pending), start=1):
             edge = pending[future]
             try:
@@ -204,7 +281,8 @@ def build_cache(
             "built_at": datetime.now(UTC).isoformat(),
             "node_count": len(nodes),
             "k": k,
-            "osrm_profile": "driving",
+            "osrm_profile": profile,
+            "courtyard_access": courtyard_access,
             "coverage_pct": round(route_coverage, 3),
             "geometry_request_coverage_pct": round(coverage, 3),
             "geometry_edges": len(records),
@@ -236,8 +314,13 @@ def main() -> None:
     parser.add_argument("--osrm", default="http://localhost:5000")
     parser.add_argument("--k", type=int, default=25)
     parser.add_argument("--workers", type=int, default=16)
+    parser.add_argument(
+        "--profile",
+        default="driving",
+        help="Semantic OSRM graph profile recorded in cache metadata (for example refuse_truck)",
+    )
     args = parser.parse_args()
-    build_cache(args.world, args.output, args.osrm, args.k, args.workers)
+    build_cache(args.world, args.output, args.osrm, args.k, args.workers, args.profile)
 
 
 if __name__ == "__main__":

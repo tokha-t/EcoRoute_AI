@@ -11,7 +11,13 @@ import requests
 
 from src.geo.polyline import encode_polyline
 from src.optimize.distances import get_matrix, get_route_geometry
-from src.optimize.road_cache import clear_road_cache_memory, load_road_cache, world_hash
+from src.optimize.road_cache import (
+    clear_road_cache_memory,
+    courtyard_access_text,
+    load_road_cache,
+    routing_profile,
+    world_hash,
+)
 
 DEPOT = (51.1, 71.1)
 SITE = (51.2, 71.2)
@@ -87,3 +93,18 @@ def test_cache_validates_world_hash_and_infrastructure(tmp_path: Path) -> None:
     cache = load_road_cache(tmp_path)
     assert cache is not None
     cache.validate_world(world, DEPOT, LANDFILL)
+
+
+def test_cache_disclosures_name_profile_and_courtyard_gap() -> None:
+    meta = {
+        "osrm_profile": "refuse_truck",
+        "courtyard_access": {
+            "threshold_m": 40.0,
+            "sites_without_mapped_access": 12,
+            "share_pct": 4.8,
+        },
+    }
+    assert routing_profile(meta) == "refuse_truck"
+    assert courtyard_access_text(meta, "ru") == (
+        "площадок без картированного подъезда: 12 (4.8%)"
+    )

@@ -659,6 +659,47 @@ Verify: pytest green; ruff clean; composition majority residential; sweep shows 
 between 0 and 100.
 ```
 
+### S10 — Truck routing profile + map that reads as an ops tool
+
+Two credibility gaps. Run as one session; part 1 needs OSRM rebuilt, part 2 does not.
+
+```text
+1. TRUCK ROUTING PROFILE (currently every distance is computed for a passenger car).
+   A 20-tonne refuse truck cannot use every street a car can, and an operator's engineer
+   will ask about this in the first meeting.
+   - docs/osrm-setup.md: add a truck profile build. Start from OSRM's car.lua, then apply
+     refuse-truck constraints: weight 20 t, height 3.6 m, width 2.5 m, length 9 m; respect
+     maxweight / maxheight / maxwidth / hgv=no / access restrictions; avoid highway=path,
+     footway, cycleway, steps; treat highway=service + service=driveway as usable (courtyard
+     access matters for waste collection); lower speeds on residential and service roads.
+     Save as profiles/refuse_truck.lua in the repo, documented, with the exact docker commands.
+   - scripts/build_road_cache.py --profile refuse_truck, recorded in meta.json.osrm_profile.
+   - Regenerate the cache and all reports; state the profile in the report header.
+   - If the truck profile is unavailable at runtime, the app must say which profile the
+     cached distances came from — never imply truck routing when the cache is car-based.
+   - Test: meta.json records the profile; the report header prints it.
+
+2. COURTYARD COVERAGE HONESTY.
+   Refuse trucks drive inside dворы, and OSM coverage of внутридворовые проезды in Astana
+   is thin. Compute, for the sector, the share of sites whose nearest routable road is more
+   than 40 m away, and report it as "площадок без картированного подъезда: N (X%)".
+   This is a known limitation to disclose, not to hide.
+
+3. MAP AS AN OPS TOOL (this is the "feels demo-like" gap).
+   - Numbered stop markers in visit order for the selected truck (1, 2, 3 …), not identical dots.
+   - Direction arrows along each route polyline so the sequence reads at a glance.
+   - Basemap with visible street names; verify the style renders labels on Streamlit Cloud.
+   - Per-truck filter that also dims non-selected trucks rather than hiding context entirely.
+   - Click/hover a stop -> side panel with address, class, fill %, load, ETA, and the skip
+     reason when applicable.
+   - Depot, landfill and the final return leg visually distinct from collection stops.
+   - Keep the dashed-line + warning treatment for any segment lacking road geometry.
+
+Do NOT add new dependencies, do NOT restructure app.py beyond what these need.
+Verify: pytest green; ruff clean; map shows numbered stops and street labels with OSRM
+stopped; report header names the routing profile and courtyard-coverage share.
+```
+
 ---
 
 ## Extras (only when needed)

@@ -43,6 +43,28 @@ def world_hash(world: pd.DataFrame) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def routing_profile(meta: dict[str, Any]) -> str:
+    """Return the profile the committed graph was built with, never an implied default."""
+    value = str(meta.get("osrm_profile") or "").strip()
+    return value or "unknown"
+
+
+def courtyard_access_text(meta: dict[str, Any], lang: str = "ru") -> str:
+    """Format the >40 m OSRM snap audit stored by the cache builder."""
+    audit = meta.get("courtyard_access")
+    if not isinstance(audit, dict):
+        return (
+            "покрытие внутридворовых подъездов не измерено"
+            if lang == "ru"
+            else "courtyard access coverage was not measured"
+        )
+    count = int(audit.get("sites_without_mapped_access", 0))
+    share = float(audit.get("share_pct", 0.0))
+    if lang == "ru":
+        return f"площадок без картированного подъезда: {count} ({share:.1f}%)"
+    return f"sites without mapped access: {count} ({share:.1f}%)"
+
+
 @dataclass(frozen=True)
 class RoadCache:
     directory: Path

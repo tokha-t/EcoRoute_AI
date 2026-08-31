@@ -1,14 +1,22 @@
 {
   "world_hash": "da15846f059142e6812d4f5f05c59232aa1728016917b899463348a87ca85f0a",
-  "built_at": "2026-08-29T19:51:30.633056+00:00",
+  "built_at": "2026-08-31T11:28:36.453434+00:00",
   "node_count": 252,
   "k": 25,
-  "osrm_profile": "driving",
+  "osrm_profile": "refuse_truck",
+  "courtyard_access": {
+    "threshold_m": 40.0,
+    "site_count": 250,
+    "sites_without_mapped_access": 0,
+    "share_pct": 0.0,
+    "mean_snap_distance_m": 0.2,
+    "max_snap_distance_m": 17.7
+  },
   "coverage_pct": 100.0,
   "geometry_request_coverage_pct": 100.0,
-  "geometry_edges": 7449,
-  "requested_geometry_edges": 7449,
-  "reference_route_edges": 1586,
+  "geometry_edges": 7422,
+  "requested_geometry_edges": 7422,
+  "reference_route_edges": 1642,
   "depot": [
     51.190491,
     71.428779

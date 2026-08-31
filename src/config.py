@@ -34,7 +34,7 @@ CONFIDENCE_THRESHOLD = 0.6  # below this, a photo goes to the manual-check list
 MAX_INTERVAL_DAYS = 3
 
 # --- V2 predictive collection simulation --------------------------------
-APP_VERSION = "2.3.0"
+APP_VERSION = "2.4.0"
 # Query envelope of the authoritative multi-part OSM relation. It may narrow
 # remote requests but must never be used as the district boundary.
 BAIKONUR_BBOX = (51.1475427, 71.2980936, 51.3511101, 71.7063332)
@@ -53,7 +53,7 @@ PLANNING_HORIZON_DAYS = 1
 
 LANDFILL_SERVICE_SECONDS = 900.0
 MAX_DUMP_TRIPS = 4
-# Calibrated by the V2.3 ten-point marginal-detour frontier. No nonzero tested
+# Calibrated by the V2.4 refuse-truck ten-point marginal-detour frontier. No nonzero tested
 # point beats the charitable fixed baseline on both distance and overflow.
 DETOUR_BUDGET_M_PER_M3 = 0.0
 FALLBACK_COST_PER_M3_M = 1_200.0

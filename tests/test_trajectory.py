@@ -96,6 +96,7 @@ def test_trajectory_is_deterministic_and_lookup_never_calls_solver(tmp_path: Pat
         days=3,
         seed=7,
         cache_dir=tmp_path,
+        matrix=matrix(),
         solver=Mock(side_effect=AssertionError("disk cache must skip solver")),
     )
     for left, right in zip(first, second):
@@ -107,7 +108,7 @@ def test_disk_cache_hash_mismatch_is_rejected(tmp_path: Path) -> None:
     data = world()
     settings = params()
     build_trajectory(data, settings, days=1, cache_dir=tmp_path, matrix=matrix(), solver=empty_solver)
-    path = trajectory_cache_path(data, settings, 1, 42, tmp_path)
+    path = trajectory_cache_path(data, settings, 1, 42, tmp_path, matrix())
     with path.open("rb") as handle:
         envelope = pickle.load(handle)
     envelope["trajectory_key"] = "wrong"
@@ -115,6 +116,15 @@ def test_disk_cache_hash_mismatch_is_rejected(tmp_path: Path) -> None:
         pickle.dump(envelope, handle)
     with pytest.raises(TrajectoryCacheMismatch, match="hash mismatch"):
         build_trajectory(data, settings, days=1, cache_dir=tmp_path, matrix=matrix())
+
+
+def test_trajectory_cache_path_changes_with_distance_matrix(tmp_path: Path) -> None:
+    first = matrix()
+    second = matrix()
+    second.meters[0][1] += 1
+    first_path = trajectory_cache_path(world(), params(), 1, 42, tmp_path, first)
+    second_path = trajectory_cache_path(world(), params(), 1, 42, tmp_path, second)
+    assert first_path != second_path
 
 
 def test_manual_override_changes_only_the_requested_day_solve() -> None:

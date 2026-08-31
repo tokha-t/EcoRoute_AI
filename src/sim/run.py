@@ -24,6 +24,12 @@ from src.config import (
     SIMULATION_DAYS,
 )
 from src.optimize.distances import DistanceMatrix, get_matrix
+from src.optimize.road_cache import (
+    RoadCacheError,
+    courtyard_access_text,
+    load_road_cache,
+    routing_profile,
+)
 from src.optimize.solver import Plan, Route, SolverParams, Truck, plan_routes
 from src.sim.fill import ClassificationParams, advance_day, classify, empty_sites
 from src.sim.provenance import (
@@ -587,6 +593,7 @@ def write_comparison_report(
     selection: SweepSelection | None = None,
     sweep_csv_path: Path = DEFAULT_SWEEP_CSV,
     sweep_svg_path: Path = DEFAULT_SWEEP_SVG,
+    road_cache_meta: dict[str, object] | None = None,
 ) -> tuple[Path, Path]:
     """Write daily CSV and simulated comparison; safety KPIs flank distance."""
     markdown_path.parent.mkdir(parents=True, exist_ok=True)
@@ -605,6 +612,14 @@ def write_comparison_report(
         }
     )
     sector = str(world["sector"].iloc[0]) if "sector" in world and not world.empty else "all"
+    if road_cache_meta is None:
+        cache = load_road_cache()
+        if cache is not None:
+            try:
+                cache.validate_world(world, DEPOT_COORDS, LANDFILL_COORDS)
+                road_cache_meta = cache.meta
+            except RoadCacheError:
+                road_cache_meta = None
     scope_warning = sector_scope_warning(world, "en")
     scope_text = sector_scope_text(world, "en")
     lines = [
@@ -613,6 +628,17 @@ def write_comparison_report(
         "> **SIMULATED DATA.** This proves policy logic on a modeled Baikonur district; "
         "real savings must be measured during the pilot.",
         "",
+        *(
+            [
+                f"Routing profile: **{routing_profile(road_cache_meta)}** "
+                "(from committed road-cache metadata).",
+                "",
+                "Courtyard access: **" + courtyard_access_text(road_cache_meta, "ru") + ".**",
+                "",
+            ]
+            if road_cache_meta is not None
+            else []
+        ),
         f"World: {len(world)} sites in sector {sector}.",
         "",
         *([f"> **SECTOR SCOPE WARNING.** {scope_warning}", ""] if scope_warning else []),
